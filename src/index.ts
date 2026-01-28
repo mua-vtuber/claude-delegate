@@ -1146,7 +1146,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "code_review",
-        description: "Perform a comprehensive code review in Korean. Saves result to .ai_reviews/ and returns file path.",
+        description: "Perform a comprehensive code review. Saves result to .ai_reviews/ and returns file path.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1800,7 +1800,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (sourceFiles.length === 0) return { content: [{ type: "text", text: "No source files." }] };
 
         const fileRefs = sourceFiles.map((f) => `@${f}`).join(" ");
-        const systemPrompt = `역할: 시니어 개발자. 목표: 한국어 코드 리뷰. 중점: ${focus}. 문제점과 개선안 위주로 작성.`;
+        const systemPrompt = `Role: Senior developer. Task: Comprehensive code review. Focus: ${focus}. Identify issues, suggest improvements, and highlight best practices.`;
         const prompt = `${fileRefs} ${systemPrompt}`;
         const { response, source } = await runGeminiWithFallback(prompt, 300000);
 
