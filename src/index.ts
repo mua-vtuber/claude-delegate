@@ -2060,7 +2060,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: `Added node: ${id} (${type})` }] };
       }
       case "memory_add_relation": {
-        const { from, to, relation, properties } = args as GraphRelation;
+        const { from, to, relation, properties } = args as unknown as GraphRelation;
         const existing = knowledgeGraph.relations.findIndex(r => r.from === from && r.to === to && r.relation === relation);
         if (existing >= 0) {
           knowledgeGraph.relations[existing] = { from, to, relation, properties };
