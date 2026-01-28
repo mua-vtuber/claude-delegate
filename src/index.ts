@@ -871,12 +871,28 @@ async function ollamaShow(model: string): Promise<any> {
 // Gemini CLI Helpers
 // ============================================
 
+function parseGeminiJsonOutput(output: string): string | null {
+  // Find JSON object in output (skip log lines before it)
+  const jsonMatch = output.match(/\{[\s\S]*"response"[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed.response) return parsed.response;
+    } catch { /* fall through to text filtering */ }
+  }
+  return null;
+}
+
 function filterGeminiOutput(output: string): string {
+  // Try JSON parsing first (cleaner)
+  const jsonResponse = parseGeminiJsonOutput(output);
+  if (jsonResponse) return jsonResponse;
+
+  // Fallback to line-based filtering for text output
   return output
     .split("\n")
     .filter((line) => {
       const t = line.trim();
-      // Filter out common noise
       if (t.includes("chcp") || t.includes("내부 또는 외부 명령")) return false;
       if (t.includes("Loaded cached credentials")) return false;
       if (t.includes("credentials")) return false;
@@ -884,9 +900,9 @@ function filterGeminiOutput(output: string): string {
       if (t.includes("Initializing")) return false;
       if (t.includes("Processing")) return false;
       if (t.includes("Reading file")) return false;
-      if (t.startsWith("[")) return false;  // Log prefixes like [INFO], [DEBUG]
-      if (t.match(/^\d+%/)) return false;   // Progress percentages
-      if (t === "") return false;           // Empty lines at start
+      if (t.startsWith("[")) return false;
+      if (t.match(/^\d+%/)) return false;
+      if (t === "") return false;
       return true;
     })
     .join("\n")
@@ -917,7 +933,7 @@ function findGeminiCliPath(): string | null {
 async function runGeminiCLI(args: string[], timeout = GEMINI_TIMEOUT): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const isWindows = process.platform === "win32";
-    const fullArgs = ["-o", "text", ...args];
+    const fullArgs = ["-o", "json", ...args];  // JSON output for cleaner parsing
 
     let proc;
     if (isWindows) {
