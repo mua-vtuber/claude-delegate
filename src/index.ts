@@ -893,6 +893,27 @@ function filterGeminiOutput(output: string): string {
     .trim();
 }
 
+function findGeminiCliPath(): string | null {
+  const isWindows = process.platform === "win32";
+  if (!isWindows) return null; // Use 'gemini' command on non-Windows
+
+  const { existsSync } = require("fs");
+  const userProfile = process.env.USERPROFILE || process.env.HOME || "C:\\Users\\Default";
+
+  // Try multiple possible paths
+  const possiblePaths = [
+    process.env.APPDATA && join(process.env.APPDATA, 'npm', 'node_modules', '@google', 'gemini-cli', 'dist', 'index.js'),
+    join(userProfile, 'AppData', 'Roaming', 'npm', 'node_modules', '@google', 'gemini-cli', 'dist', 'index.js'),
+    join(userProfile, '.npm-global', 'node_modules', '@google', 'gemini-cli', 'dist', 'index.js'),
+    process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'npm', 'node_modules', '@google', 'gemini-cli', 'dist', 'index.js'),
+  ].filter(Boolean) as string[];
+
+  for (const p of possiblePaths) {
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
 async function runGeminiCLI(args: string[], timeout = GEMINI_TIMEOUT): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const isWindows = process.platform === "win32";
@@ -900,8 +921,11 @@ async function runGeminiCLI(args: string[], timeout = GEMINI_TIMEOUT): Promise<s
 
     let proc;
     if (isWindows) {
-      const appData = process.env.APPDATA || `${process.env.USERPROFILE}\\AppData\\Roaming`;
-      const geminiCliPath = join(appData, 'npm', 'node_modules', '@google', 'gemini-cli', 'dist', 'index.js');
+      const geminiCliPath = findGeminiCliPath();
+      if (!geminiCliPath) {
+        reject(new Error("Gemini CLI not found. Install with: npm install -g @google/gemini-cli"));
+        return;
+      }
 
       proc = spawn("node", [geminiCliPath, ...fullArgs], {
         windowsHide: true,
