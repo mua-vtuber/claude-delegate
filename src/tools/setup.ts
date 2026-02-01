@@ -7,9 +7,10 @@ import { resolve, join } from "path";
 import { ollamaRequest, ollamaPull } from "../helpers/ollama.js";
 import { detectGpu, buildSystemProfile, loadCachedProfile, saveCachedProfile } from "../helpers/profiler.js";
 import { OLLAMA_MODELS } from "../helpers/routing.js";
-import { PROJECT_ROOT } from "../config.js";
+import { PROJECT_ROOT, execFilePromise } from "../config.js";
 import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult, SystemProfile } from "../types.js";
+import { findGeminiCliPath } from "../helpers/gemini.js";
 
 // ===== Schemas =====
 export const systemProfileSchema = z.object({
@@ -350,6 +351,141 @@ health_check()         // Diagnose issues
   }
 }
 
+interface DependencyResult {
+  installed: boolean;
+  action: string;
+  path?: string;
+  version?: string;
+  authenticated?: boolean;
+  auth_guide?: string;
+  install_guide?: string;
+}
+
+async function checkAndInstallGeminiCli(dryRun: boolean): Promise<DependencyResult> {
+  // Check if already installed
+  const geminiPath = await findGeminiCliPath();
+  if (geminiPath) {
+    return { installed: true, action: "already_installed", path: geminiPath };
+  }
+
+  // On non-Windows, check via PATH
+  if (process.platform !== "win32") {
+    try {
+      await execFilePromise("gemini", ["--version"], { timeout: 5000 });
+      return { installed: true, action: "already_installed", path: "gemini (via PATH)" };
+    } catch {
+      // Not found via PATH either
+    }
+  }
+
+  if (dryRun) {
+    return {
+      installed: false,
+      action: "would_install",
+      install_guide: "npm install -g @google/gemini-cli",
+      auth_guide: "Run 'gemini' once to authenticate via browser",
+    };
+  }
+
+  // Attempt installation
+  try {
+    await execFilePromise("npm", ["install", "-g", "@google/gemini-cli"], { timeout: 120000, shell: true });
+    // Re-check after install
+    const newPath = await findGeminiCliPath();
+    return {
+      installed: true,
+      action: "installed",
+      path: newPath || undefined,
+      auth_guide: "Run 'gemini' once to authenticate via browser",
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      installed: false,
+      action: `install_failed: ${message}`,
+      install_guide: "npm install -g @google/gemini-cli",
+      auth_guide: "Run 'gemini' once to authenticate via browser",
+    };
+  }
+}
+
+async function checkAndInstallGithubCli(dryRun: boolean): Promise<DependencyResult> {
+  // Check if already installed
+  try {
+    const { stdout } = await execFilePromise("gh", ["--version"], { timeout: 5000 });
+    const version = stdout.trim().split("\n")[0];
+
+    // Check authentication status
+    let authenticated = false;
+    try {
+      await execFilePromise("gh", ["auth", "status"], { timeout: 5000 });
+      authenticated = true;
+    } catch {
+      // Not authenticated
+    }
+
+    return { installed: true, action: "already_installed", version, authenticated };
+  } catch {
+    // gh not found
+  }
+
+  if (dryRun) {
+    return {
+      installed: false,
+      action: "would_install",
+      install_guide: process.platform === "win32"
+        ? "winget install --id GitHub.cli -e"
+        : "https://cli.github.com/",
+      auth_guide: "Run 'gh auth login' to authenticate",
+    };
+  }
+
+  // Attempt installation (Windows only via winget)
+  if (process.platform === "win32") {
+    try {
+      await execFilePromise("winget", [
+        "install", "--id", "GitHub.cli", "-e",
+        "--accept-source-agreements", "--accept-package-agreements",
+      ], { timeout: 300000, shell: true });
+
+      // Re-check after install
+      try {
+        const { stdout } = await execFilePromise("gh", ["--version"], { timeout: 5000 });
+        return {
+          installed: true,
+          action: "installed",
+          version: stdout.trim().split("\n")[0],
+          authenticated: false,
+          auth_guide: "Run 'gh auth login' to authenticate",
+        };
+      } catch {
+        return {
+          installed: false,
+          action: "install_failed: installed but not found in PATH (restart terminal)",
+          install_guide: "winget install --id GitHub.cli -e",
+          auth_guide: "Run 'gh auth login' to authenticate",
+        };
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        installed: false,
+        action: `install_failed: ${message}`,
+        install_guide: "winget install --id GitHub.cli -e",
+        auth_guide: "Run 'gh auth login' to authenticate",
+      };
+    }
+  }
+
+  // Non-Windows: no auto-install, just guide
+  return {
+    installed: false,
+    action: "not_found",
+    install_guide: "https://cli.github.com/",
+    auth_guide: "Run 'gh auth login' to authenticate",
+  };
+}
+
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "delegate_system_profile": {
@@ -414,7 +550,11 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
         }
       }
 
-      // Step 4: Configure settings.json and CLAUDE.md
+      // Step 4: Check external CLI dependencies
+      const geminiResult = await checkAndInstallGeminiCli(dry_run);
+      const githubResult = await checkAndInstallGithubCli(dry_run);
+
+      // Step 5: Configure settings.json and CLAUDE.md
       const settingsResult = dry_run
         ? { action: "would_configure" }
         : await ensureSettingsPermission();
@@ -434,6 +574,10 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
           effective_config: profile.effective_config,
         },
         actions,
+        dependencies: {
+          gemini_cli: geminiResult,
+          github_cli: githubResult,
+        },
         configuration: {
           settings_json: settingsResult.action,
           claude_md: claudeMdResult.action,

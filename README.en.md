@@ -66,9 +66,19 @@ This command automatically performs:
 1. GPU/VRAM detection (nvidia-smi)
 2. Model-by-model VRAM compatibility calculation
 3. Automatic download of compatible models
-4. Add tool permissions to `.claude/settings.json`
-5. Add tool usage guide to `CLAUDE.md`
-6. Save profile cache to `.mcp-profile.json`
+4. **External CLI dependency detection and auto-installation**
+   - **Gemini CLI**: Auto-runs `npm install -g @google/gemini-cli` if not installed
+   - **GitHub CLI**: Auto-runs `winget install GitHub.cli` if not installed
+   - Provides authentication guidance after installation
+5. Add tool permissions to `.claude/settings.json`
+6. Add tool usage guide to `CLAUDE.md`
+7. Save profile cache to `.mcp-profile.json`
+
+> **Note**: Gemini CLI and GitHub CLI are optional.
+> Setup continues even if installation fails; only tools requiring those CLIs will be unavailable.
+> Initial authentication is required after installation:
+> - Gemini CLI: Authenticate via browser on first run
+> - GitHub CLI: Run `gh auth login`
 
 ---
 
