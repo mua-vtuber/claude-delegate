@@ -26,13 +26,13 @@ async function main() {
   const profile = await loadCachedProfile();
   if (profile) {
     setCachedSystemProfile(profile);
-    console.error(`[auto-setup] Profile loaded: ${profile.gpu.name}, ${profile.gpu.vram_total_mb}MB VRAM`);
+    console.error(`[delegate] Profile loaded: ${profile.gpu.name}, ${profile.gpu.vram_total_mb}MB VRAM`);
     if (profile.gpu.detected_via === "none") {
       console.error("[WARNING] No NVIDIA GPU detected. Ollama runs on CPU (system RAM) which is significantly slower.");
       console.error("[WARNING] 7B models: 5-15 tok/s, 14B+: practically unusable. GPU-accelerated usage is recommended.");
     }
   } else {
-    console.error("[auto-setup] No profile found. Run 'auto_setup' tool for optimal configuration.");
+    console.error("[delegate] No profile found. Run 'delegate_setup' tool for optimal configuration.");
   }
 
   // Check Ollama connectivity

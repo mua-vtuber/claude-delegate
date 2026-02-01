@@ -51,9 +51,9 @@ npm run build
 
 ### 자동 설정 (권장)
 
-MCP 서버 등록 후 Claude에게 `auto_setup` 도구를 한 번 실행하도록 요청하세요:
+MCP 서버 등록 후 Claude에게 `delegate_setup` 도구를 한 번 실행하도록 요청하세요:
 
-> "auto_setup 도구를 실행해줘"
+> "delegate_setup 도구를 실행해줘"
 
 이 명령은 다음을 자동으로 수행합니다:
 
@@ -196,8 +196,8 @@ MCP 서버 등록 후 Claude에게 `auto_setup` 도구를 한 번 실행하도�
 
 | 도구 | 설명 |
 |------|------|
-| `system_profile` | GPU/VRAM 감지 및 최적 모델 설정 계산 |
-| `auto_setup` | 하드웨어 감지 → 모델 설치 → 권한 설정 자동화 |
+| `delegate_system_profile` | GPU/VRAM 감지 및 최적 모델 설정 계산 |
+| `delegate_setup` | 하드웨어 감지 → 모델 설치 → 권한 설정 자동화 |
 
 ### 기타 (4)
 
@@ -234,7 +234,7 @@ MCP 서버 등록 후 Claude에게 `auto_setup` 도구를 한 번 실행하도�
 
 ### 자동 num_ctx 최적화
 
-`auto_setup` 실행 후 모든 Ollama API 호출에 VRAM 기반 최적 컨텍스트 크기가 자동 적용됩니다. 별도 설정이 필요 없습니다.
+`delegate_setup` 실행 후 모든 Ollama API 호출에 VRAM 기반 최적 컨텍스트 크기가 자동 적용됩니다. 별도 설정이 필요 없습니다.
 
 ---
 
@@ -295,7 +295,7 @@ claude-delegate/
 │   │   └── filesystem.ts # 파일 시스템 헬퍼
 │   ├── tools/            # 16개 도구 모듈 (60개 도구)
 │   └── __tests__/        # 테스트
-├── .mcp-profile.json     # 시스템 프로파일 캐시 (auto_setup 생성)
+├── .mcp-profile.json     # 시스템 프로파일 캐시 (delegate_setup 생성)
 ├── .ai_reviews/          # 분석 결과 저장소
 ├── .ai_context.md        # 프로젝트 메모리
 └── package.json
@@ -314,15 +314,90 @@ npm test           # 테스트 실행
 
 ---
 
+## 공유 / 배포 가이드
+
+이 MCP 서버를 다른 사람에게 공유할 때의 설치 순서입니다.
+
+### 빠른 시작 (3단계)
+
+**1단계: 설치**
+
+```bash
+git clone <repository-url>
+cd claude-delegate
+npm install && npm run build
+```
+
+**2단계: Claude Code에 MCP 등록**
+
+프로젝트 디렉토리에서 Claude Code CLI로 등록:
+
+```bash
+claude mcp add claude-delegate node /absolute/path/to/claude-delegate/dist/index.js
+```
+
+또는 `.claude.json`에 수동 추가:
+
+```json
+{
+  "mcpServers": {
+    "claude-delegate": {
+      "command": "node",
+      "args": ["/absolute/path/to/claude-delegate/dist/index.js"]
+    }
+  }
+}
+```
+
+**3단계: 자동 설정**
+
+Claude에게 요청:
+
+> "delegate_setup 도구를 실행해줘"
+
+이 한 번의 명령으로 다음이 자동 완료됩니다:
+
+- GPU/VRAM 감지 및 최적 모델 계산
+- VRAM에 맞는 Ollama 모델 자동 설치
+- `.claude/settings.json` 생성 또는 권한 추가 (없으면 자동 생성)
+- `CLAUDE.md`에 도구 사용 가이드 추가
+
+### 사전 요구사항
+
+| 필수 | 선택 |
+|------|------|
+| [Node.js](https://nodejs.org/) v18+ | [Gemini CLI](https://github.com/google/gemini-cli) |
+| [Ollama](https://ollama.com/) 실행 중 | [GitHub CLI](https://cli.github.com/) |
+
+### 공유 시 제외되는 파일 (.gitignore)
+
+다음 파일은 자동으로 git에서 제외되므로 공유해도 안전합니다:
+
+| 파일 | 설명 |
+|------|------|
+| `.mcp-profile.json` | 하드웨어 프로파일 (GPU/VRAM 정보) |
+| `.ai_reviews/` | 코드 리뷰 결과 |
+| `.ai_context.md` | 프로젝트 메모리 |
+
+### 검증
+
+설치 후 동작 확인:
+
+> "health_check 도구를 실행해줘"
+
+Ollama 연결, 모델 가용성, Gemini CLI 상태를 한 번에 확인할 수 있습니다.
+
+---
+
 ## 문제 해결
 
 | 문제 | 해결 |
 |------|------|
 | Ollama 연결 실패 | `ollama serve` 실행 확인 |
 | Gemini 인증 오류 | `gemini auth login` 실행 |
-| 도구가 사용되지 않음 | `auto_setup` 실행 (settings.json 권한 자동 추가) |
+| 도구가 사용되지 않음 | `delegate_setup` 실행 (settings.json 권한 자동 추가) |
 | 빌드 오류 | `npm run build` 재실행 |
-| 32B 모델 느림 | `auto_setup` 실행 (VRAM 부족 시 자동 제외) |
+| 32B 모델 느림 | `delegate_setup` 실행 (VRAM 부족 시 자동 제외) |
 
 ---
 

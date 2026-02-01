@@ -1,5 +1,6 @@
 // ========== LLM Utility Tools ==========
 
+import { z } from "zod";
 import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { resolve } from "path";
@@ -10,134 +11,98 @@ import { OLLAMA_MODELS, selectOllamaModel } from "../helpers/routing.js";
 import { saveReviewToFile } from "../helpers/filesystem.js";
 import { assertPathSafe } from "../security.js";
 import { MAX_INPUT_CHARS, MODEL_AUTO } from "../config.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
+// ===== Schemas =====
+export const promptTemplateSchema = z.object({
+  action: z.enum(["save", "get", "list", "apply", "delete"]).describe("Action to perform"),
+  name: z.string().optional().describe("Template name"),
+  template: z.string().optional().describe("Template content with {{variable}} placeholders"),
+  variables: z.record(z.string(), z.unknown()).optional().describe("Variables to substitute when applying"),
+});
+
+export const responseCacheSchema = z.object({
+  action: z.enum(["get", "set", "clear", "stats"]).describe("Action"),
+  key: z.string().optional().describe("Cache key (usually the prompt hash)"),
+  value: z.string().optional().describe("Response to cache"),
+  ttl: z.number().optional().default(3600).describe("Time-to-live in seconds"),
+});
+
+export const tokenCountSchema = z.object({
+  text: z.string().describe("Text to count tokens for"),
+  model: z.enum(["gpt", "claude", "llama"]).optional().default("gpt").describe("Model family for estimation"),
+});
+
+export const translateTextSchema = z.object({
+  text: z.string().describe("Text to translate"),
+  target_lang: z.string().describe("Target language (e.g., 'Korean', 'English', 'Japanese')"),
+  source_lang: z.string().optional().describe("Source language (auto-detect if not provided)"),
+  model: z.enum(["ollama", "gemini", MODEL_AUTO]).optional().default(MODEL_AUTO),
+});
+
+export const translateFileSchema = z.object({
+  file_path: z.string().describe("Path to file to translate"),
+  target_lang: z.string().describe("Target language (e.g., 'Korean', 'English', 'Japanese')"),
+  source_lang: z.string().optional().describe("Source language (auto-detect if not provided)"),
+  output_path: z.string().optional().describe("Custom output file path (default: auto-generated in .ai_reviews/)"),
+  model: z.string().optional().describe("Ollama model name (default: 7B light model)"),
+  num_ctx: z.number().optional().default(32768).describe("Context window size for Ollama (default: 32768, safe for 16GB VRAM)"),
+});
+
+export const summarizeTextSchema = z.object({
+  text: z.string().describe("Text to summarize"),
+  style: z.enum(["brief", "detailed", "bullet", "eli5"]).optional().default("brief"),
+  max_length: z.number().optional().describe("Maximum length in words"),
+  model: z.enum(["ollama", "gemini", MODEL_AUTO]).optional().default(MODEL_AUTO),
+});
+
+export const extractKeywordsSchema = z.object({
+  text: z.string().describe("Text to analyze"),
+  max_keywords: z.number().optional().default(10),
+  model: z.enum(["ollama", "gemini", MODEL_AUTO]).optional().default(MODEL_AUTO),
+});
+
+export const explainCodeSchema = z.object({
+  code: z.string().describe("Code to explain"),
+  language: z.string().optional().describe("Programming language"),
+  detail_level: z.enum(["brief", "detailed", "eli5"]).optional().default("detailed"),
+  model: z.enum(["ollama", "gemini", MODEL_AUTO]).optional().default(MODEL_AUTO),
+});
+
+export const improveTextSchema = z.object({
+  text: z.string().describe("Text to improve"),
+  focus: z.enum(["grammar", "clarity", "conciseness", "formal", "casual"]).optional().default("clarity"),
+  model: z.enum(["ollama", "gemini", MODEL_AUTO]).optional().default(MODEL_AUTO),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "prompt_template",
-    description: "Manage prompt templates. Store, retrieve, and apply templates with variables.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["save", "get", "list", "apply", "delete"], description: "Action to perform" },
-        name: { type: "string", description: "Template name" },
-        template: { type: "string", description: "Template content with {{variable}} placeholders" },
-        variables: { type: "object", description: "Variables to substitute when applying" },
-      },
-      required: ["action"],
-    },
-  },
-  {
-    name: "response_cache",
-    description: "Cache LLM responses to save tokens and reduce latency.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["get", "set", "clear", "stats"], description: "Action" },
-        key: { type: "string", description: "Cache key (usually the prompt hash)" },
-        value: { type: "string", description: "Response to cache" },
-        ttl: { type: "number", default: 3600, description: "Time-to-live in seconds" },
-      },
-      required: ["action"],
-    },
-  },
-  {
-    name: "token_count",
-    description: "Estimate token count for text (approximation based on word/character count).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "Text to count tokens for" },
-        model: { type: "string", enum: ["gpt", "claude", "llama"], default: "gpt", description: "Model family for estimation" },
-      },
-      required: ["text"],
-    },
-  },
-  {
-    name: "translate_text",
-    description: "Translate text using Ollama or Gemini.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "Text to translate" },
-        target_lang: { type: "string", description: "Target language (e.g., 'Korean', 'English', 'Japanese')" },
-        source_lang: { type: "string", description: "Source language (auto-detect if not provided)" },
-        model: { type: "string", enum: ["ollama", "gemini", MODEL_AUTO], default: MODEL_AUTO },
-      },
-      required: ["text", "target_lang"],
-    },
-  },
-  {
-    name: "translate_file",
-    description: "Translate a file using Ollama. MCP reads the file server-side and sends to Ollama with extended context window, so Claude doesn't consume tokens for file content. Result is saved to a file.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        file_path: { type: "string", description: "Path to file to translate" },
-        target_lang: { type: "string", description: "Target language (e.g., 'Korean', 'English', 'Japanese')" },
-        source_lang: { type: "string", description: "Source language (auto-detect if not provided)" },
-        output_path: { type: "string", description: "Custom output file path (default: auto-generated in .ai_reviews/)" },
-        model: { type: "string", description: "Ollama model name (default: 7B light model)" },
-        num_ctx: { type: "number", default: 32768, description: "Context window size for Ollama (default: 32768, safe for 16GB VRAM)" },
-      },
-      required: ["file_path", "target_lang"],
-    },
-  },
-  {
-    name: "summarize_text",
-    description: "Summarize text using Ollama or Gemini.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "Text to summarize" },
-        style: { type: "string", enum: ["brief", "detailed", "bullet", "eli5"], default: "brief" },
-        max_length: { type: "number", description: "Maximum length in words" },
-        model: { type: "string", enum: ["ollama", "gemini", MODEL_AUTO], default: MODEL_AUTO },
-      },
-      required: ["text"],
-    },
-  },
-  {
-    name: "extract_keywords",
-    description: "Extract keywords and key phrases from text using LLM.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "Text to analyze" },
-        max_keywords: { type: "number", default: 10 },
-        model: { type: "string", enum: ["ollama", "gemini", MODEL_AUTO], default: MODEL_AUTO },
-      },
-      required: ["text"],
-    },
-  },
-  {
-    name: "explain_code",
-    description: "Explain code in natural language using LLM.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        code: { type: "string", description: "Code to explain" },
-        language: { type: "string", description: "Programming language" },
-        detail_level: { type: "string", enum: ["brief", "detailed", "eli5"], default: "detailed" },
-        model: { type: "string", enum: ["ollama", "gemini", MODEL_AUTO], default: MODEL_AUTO },
-      },
-      required: ["code"],
-    },
-  },
-  {
-    name: "improve_text",
-    description: "Improve text quality (grammar, clarity, style) using LLM.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        text: { type: "string", description: "Text to improve" },
-        focus: { type: "string", enum: ["grammar", "clarity", "conciseness", "formal", "casual"], default: "clarity" },
-        model: { type: "string", enum: ["ollama", "gemini", MODEL_AUTO], default: MODEL_AUTO },
-      },
-      required: ["text"],
-    },
-  },
+  createToolDefinition("prompt_template", "Manage prompt templates. Store, retrieve, and apply templates with variables.", promptTemplateSchema),
+  createToolDefinition("response_cache", "Cache LLM responses to save tokens and reduce latency.", responseCacheSchema),
+  createToolDefinition("token_count", "Estimate token count for text (approximation based on word/character count).", tokenCountSchema),
+  createToolDefinition("translate_text", "Translate text using Ollama or Gemini.", translateTextSchema),
+  createToolDefinition("translate_file", "Translate a file using Ollama. MCP reads the file server-side and sends to Ollama with extended context window, so Claude doesn't consume tokens for file content. Result is saved to a file.", translateFileSchema),
+  createToolDefinition("summarize_text", "Summarize text using Ollama or Gemini.", summarizeTextSchema),
+  createToolDefinition("extract_keywords", "Extract keywords and key phrases from text using LLM.", extractKeywordsSchema),
+  createToolDefinition("explain_code", "Explain code in natural language using LLM.", explainCodeSchema),
+  createToolDefinition("improve_text", "Improve text quality (grammar, clarity, style) using LLM.", improveTextSchema),
 ];
+
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  prompt_template: promptTemplateSchema,
+  response_cache: responseCacheSchema,
+  token_count: tokenCountSchema,
+  translate_text: translateTextSchema,
+  translate_file: translateFileSchema,
+  summarize_text: summarizeTextSchema,
+  extract_keywords: extractKeywordsSchema,
+  explain_code: explainCodeSchema,
+  improve_text: improveTextSchema,
+};
+
+// ===== Internal Helpers =====
 
 /**
  * Classify text into different character types for language-aware token estimation.
@@ -232,10 +197,11 @@ async function routeToLLM(
   return (await ollamaChat(OLLAMA_MODELS.fast, prompt)).trim();
 }
 
+// ===== Handler =====
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "prompt_template": {
-      const { action, name: tplName, template, variables } = args as { action: string; name?: string; template?: string; variables?: Record<string, unknown> };
+      const { action, name: tplName, template, variables } = promptTemplateSchema.parse(args);
 
       switch (action) {
         case "save":
@@ -269,7 +235,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       }
     }
     case "response_cache": {
-      const { action, key, value, ttl = 3600 } = args as { action: string; key?: string; value?: string; ttl?: number };
+      const { action, key, value, ttl } = responseCacheSchema.parse(args);
       const now = Date.now();
 
       switch (action) {
@@ -311,7 +277,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       }
     }
     case "token_count": {
-      const { text, model = "gpt" } = args as { text: string; model?: string };
+      const { text, model } = tokenCountSchema.parse(args);
       const charCount = text.length;
       const wordCount = text.split(/\s+/).filter(Boolean).length;
 
@@ -365,7 +331,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       };
     }
     case "translate_text": {
-      const { text, target_lang, source_lang, model = MODEL_AUTO } = args as { text: string; target_lang: string; source_lang?: string; model?: string };
+      const { text, target_lang, source_lang, model } = translateTextSchema.parse(args);
       if (text.length > MAX_INPUT_CHARS) {
         throw new Error(`Input exceeds maximum size (${MAX_INPUT_CHARS} characters). Please split the input.`);
       }
@@ -381,7 +347,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       return { content: [{ type: "text", text: response.trim() }] };
     }
     case "translate_file": {
-      const { file_path, target_lang, source_lang, output_path, model, num_ctx = 32768 } = args as { file_path: string; target_lang: string; source_lang?: string; output_path?: string; model?: string; num_ctx?: number };
+      const { file_path, target_lang, source_lang, output_path, model, num_ctx } = translateFileSchema.parse(args);
 
       assertPathSafe(file_path, "translate_file");
       const fullPath = resolve(file_path);
@@ -412,7 +378,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       return { content: [{ type: "text", text: `Translation saved to: ${savedPath}` }] };
     }
     case "summarize_text": {
-      const { text, style = "brief", max_length, model = MODEL_AUTO } = args as { text: string; style?: string; max_length?: number; model?: string };
+      const { text, style, max_length, model } = summarizeTextSchema.parse(args);
       if (text.length > MAX_INPUT_CHARS) {
         throw new Error(`Input exceeds maximum size (${MAX_INPUT_CHARS} characters). Please split the input.`);
       }
@@ -432,7 +398,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       return { content: [{ type: "text", text: response }] };
     }
     case "extract_keywords": {
-      const { text, max_keywords = 10, model = MODEL_AUTO } = args as { text: string; max_keywords?: number; model?: string };
+      const { text, max_keywords, model } = extractKeywordsSchema.parse(args);
       if (text.length > MAX_INPUT_CHARS) {
         throw new Error(`Input exceeds maximum size (${MAX_INPUT_CHARS} characters). Please split the input.`);
       }
@@ -449,7 +415,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       }
     }
     case "explain_code": {
-      const { code, language, detail_level = "detailed", model = MODEL_AUTO } = args as { code: string; language?: string; detail_level?: string; model?: string };
+      const { code, language, detail_level, model } = explainCodeSchema.parse(args);
       if (code.length > MAX_INPUT_CHARS) {
         throw new Error(`Input exceeds maximum size (${MAX_INPUT_CHARS} characters). Please split the input.`);
       }
@@ -468,7 +434,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       return { content: [{ type: "text", text: response }] };
     }
     case "improve_text": {
-      const { text, focus = "clarity", model = MODEL_AUTO } = args as { text: string; focus?: string; model?: string };
+      const { text, focus, model } = improveTextSchema.parse(args);
       if (text.length > MAX_INPUT_CHARS) {
         throw new Error(`Input exceeds maximum size (${MAX_INPUT_CHARS} characters). Please split the input.`);
       }

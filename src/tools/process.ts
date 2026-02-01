@@ -1,64 +1,55 @@
 // ========== Process Management Tools ==========
 
+import { z } from "zod";
 import { spawn } from "child_process";
 import { execFilePromise } from "../config.js";
 import { backgroundProcesses } from "../state.js";
 import { assertCommandAllowed } from "../security.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
 const MAX_BACKGROUND_PROCESSES = 20;
 
+// ===== Schemas =====
+export const processListSchema = z.object({
+  filter: z.string().optional().describe("Filter by process name"),
+});
+
+export const processKillSchema = z.object({
+  pid: z.number().describe("Process ID to kill"),
+  force: z.boolean().optional().default(false).describe("Force kill (SIGKILL)"),
+});
+
+export const backgroundRunSchema = z.object({
+  command: z.string().describe("Command to run"),
+  args: z.array(z.string()).optional(),
+});
+
+export const backgroundStatusSchema = z.object({
+  handle_id: z.string().optional().describe("Specific handle ID to check (optional)"),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "process_list",
-    description: "List running processes (filtered by name if provided).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filter: { type: "string", description: "Filter by process name" },
-      },
-    },
-  },
-  {
-    name: "process_kill",
-    description: "Kill a process by PID.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        pid: { type: "number", description: "Process ID to kill" },
-        force: { type: "boolean", default: false, description: "Force kill (SIGKILL)" },
-      },
-      required: ["pid"],
-    },
-  },
-  {
-    name: "background_run",
-    description: "Run a command in the background. Returns a handle ID.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "Command to run" },
-        args: { type: "array", items: { type: "string" } },
-      },
-      required: ["command"],
-    },
-  },
-  {
-    name: "background_status",
-    description: "Check status of background processes.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        handle_id: { type: "string", description: "Specific handle ID to check (optional)" },
-      },
-    },
-  },
+  createToolDefinition("process_list", "List running processes (filtered by name if provided).", processListSchema),
+  createToolDefinition("process_kill", "Kill a process by PID.", processKillSchema),
+  createToolDefinition("background_run", "Run a command in the background. Returns a handle ID.", backgroundRunSchema),
+  createToolDefinition("background_status", "Check status of background processes.", backgroundStatusSchema),
 ];
 
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  process_list: processListSchema,
+  process_kill: processKillSchema,
+  background_run: backgroundRunSchema,
+  background_status: backgroundStatusSchema,
+};
+
+// ===== Handler =====
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "process_list": {
-      const { filter } = args as { filter?: string };
+      const { filter } = processListSchema.parse(args);
       const isWindows = process.platform === "win32";
 
       try {
@@ -77,7 +68,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       }
     }
     case "process_kill": {
-      const { pid, force = false } = args as { pid: number; force?: boolean };
+      const { pid, force } = processKillSchema.parse(args);
 
       // Only allow killing server-spawned background processes
       const isOwnedProcess = [...backgroundProcesses.values()].some(p => p.pid === pid);
@@ -103,7 +94,9 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       }
     }
     case "background_run": {
-      const { command, args: cmdArgs = [] } = args as { command: string; args?: string[] };
+      const validated = backgroundRunSchema.parse(args);
+      const command = validated.command;
+      const cmdArgs = validated.args ?? [];
       assertCommandAllowed(command);
 
       if (backgroundProcesses.size >= MAX_BACKGROUND_PROCESSES) {
@@ -119,7 +112,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       return { content: [{ type: "text", text: JSON.stringify({ handle_id: handleId, pid: proc.pid }, null, 2) }] };
     }
     case "background_status": {
-      const { handle_id } = args as { handle_id?: string };
+      const { handle_id } = backgroundStatusSchema.parse(args);
 
       if (handle_id) {
         const proc = backgroundProcesses.get(handle_id);

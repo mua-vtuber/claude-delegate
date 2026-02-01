@@ -54,9 +54,9 @@ Add to `claude_desktop_config.json` or `.claude.json`:
 
 ### Automatic Setup (Recommended)
 
-After registering the MCP server, ask Claude to run the `auto_setup` tool once:
+After registering the MCP server, ask Claude to run the `delegate_setup` tool once:
 
-> "Run the auto_setup tool"
+> "Run the delegate_setup tool"
 
 This command automatically performs:
 
@@ -221,8 +221,8 @@ This command automatically performs:
 
 | Tool | Description |
 |------|-------------|
-| `system_profile` | Detect GPU/VRAM and calculate optimal model settings |
-| `auto_setup` | Hardware detection → model installation → permission setup automation |
+| `delegate_system_profile` | Detect GPU/VRAM and calculate optimal model settings |
+| `delegate_setup` | Hardware detection → model installation → permission setup automation |
 
 ### Other Tools (3)
 
@@ -259,7 +259,7 @@ Request: 14B → VRAM insufficient → Auto-switch to 7B
 
 ### Automatic num_ctx Optimization
 
-After running `auto_setup`, all Ollama API calls automatically apply VRAM-based optimal context size. No additional configuration needed.
+After running `delegate_setup`, all Ollama API calls automatically apply VRAM-based optimal context size. No additional configuration needed.
 
 ---
 
@@ -344,7 +344,7 @@ claude-delegate/
 │   │   └── filesystem.ts # File system helpers
 │   ├── tools/            # 17 tool modules (60 tools)
 │   └── __tests__/        # Tests
-├── .mcp-profile.json     # System profile cache (created by auto_setup)
+├── .mcp-profile.json     # System profile cache (created by delegate_setup)
 ├── .ai_reviews/          # Analysis result storage
 ├── .ai_context.md        # Project memory
 └── package.json
@@ -363,15 +363,90 @@ npm test           # Run tests
 
 ---
 
+## Sharing / Distribution Guide
+
+Setup steps when sharing this MCP server with others.
+
+### Quick Start (3 Steps)
+
+**Step 1: Install**
+
+```bash
+git clone <repository-url>
+cd claude-delegate
+npm install && npm run build
+```
+
+**Step 2: Register MCP in Claude Code**
+
+Register via Claude Code CLI in your project directory:
+
+```bash
+claude mcp add claude-delegate node /absolute/path/to/claude-delegate/dist/index.js
+```
+
+Or manually add to `.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "claude-delegate": {
+      "command": "node",
+      "args": ["/absolute/path/to/claude-delegate/dist/index.js"]
+    }
+  }
+}
+```
+
+**Step 3: Auto Setup**
+
+Ask Claude:
+
+> "Run the delegate_setup tool"
+
+This single command automatically:
+
+- Detects GPU/VRAM and calculates optimal models
+- Installs Ollama models that fit your VRAM
+- Creates or updates `.claude/settings.json` with permissions (creates if missing)
+- Adds tool usage guide to `CLAUDE.md`
+
+### Prerequisites
+
+| Required | Optional |
+|----------|----------|
+| [Node.js](https://nodejs.org/) v18+ | [Gemini CLI](https://github.com/google/gemini-cli) |
+| [Ollama](https://ollama.com/) running | [GitHub CLI](https://cli.github.com/) |
+
+### Files Excluded from Sharing (.gitignore)
+
+The following files are automatically excluded from git, making it safe to share:
+
+| File | Description |
+|------|-------------|
+| `.mcp-profile.json` | Hardware profile (GPU/VRAM info) |
+| `.ai_reviews/` | Code review results |
+| `.ai_context.md` | Project memory |
+
+### Verification
+
+After setup, verify everything works:
+
+> "Run the health_check tool"
+
+This checks Ollama connectivity, model availability, and Gemini CLI status in one step.
+
+---
+
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
 | Ollama connection failure | Verify `ollama serve` is running |
 | Gemini auth error | Run `gemini auth login` |
-| Tools not being used | Run `auto_setup` (auto-adds settings.json permissions) |
+| Tools not being used | Run `delegate_setup` (auto-adds settings.json permissions) |
 | Build error | Re-run `npm run build` |
-| 32B model slow | Run `auto_setup` (auto-excludes if VRAM insufficient) |
+| 32B model slow | Run `delegate_setup` (auto-excludes if VRAM insufficient) |
 
 ---
 

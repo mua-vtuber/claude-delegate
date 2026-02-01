@@ -1,28 +1,29 @@
 // ========== Health Check Tools ==========
 
+import { z } from "zod";
 import { OLLAMA_HOST, VERSION } from "../config.js";
 import { OLLAMA_MODELS } from "../helpers/routing.js";
 import { findGeminiCliPath } from "../helpers/gemini.js";
 import { ollamaRequest } from "../helpers/ollama.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
+// ===== Schemas =====
+export const healthCheckSchema = z.object({
+  check: z.enum(["all", "ollama", "gemini"]).optional().default("all").describe("Which service to check (default: all)"),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "health_check",
-    description: "Check connectivity and status of Ollama and Gemini CLI services. Returns structured health information including installed models and service availability.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        check: {
-          type: "string",
-          enum: ["all", "ollama", "gemini"],
-          description: "Which service to check (default: all)",
-        },
-      },
-    },
-  },
+  createToolDefinition("health_check", "Check connectivity and status of Ollama and Gemini CLI services. Returns structured health information including installed models and service availability.", healthCheckSchema),
 ];
 
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  health_check: healthCheckSchema,
+};
+
+// ===== Handler =====
 interface ModelStatus {
   name: string;
   installed: boolean;
@@ -116,7 +117,7 @@ async function checkGemini(): Promise<HealthCheckResult["gemini"]> {
 }
 
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
-  const { check = "all" } = args as { check?: "all" | "ollama" | "gemini" };
+  const { check } = healthCheckSchema.parse(args);
 
   const result: HealthCheckResult = {
     server_version: VERSION,

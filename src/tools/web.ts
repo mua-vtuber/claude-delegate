@@ -1,27 +1,31 @@
 // ========== Web & Research Tools ==========
 
+import { z } from "zod";
 import { stripHtml } from "../helpers/filesystem.js";
 import { assertUrlSafe } from "../security.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
+// ===== Schemas =====
+export const fetchUrlSchema = z.object({
+  url: z.string().describe("URL to fetch (http/https)"),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "fetch_url",
-    description: "Fetch and extract text content from a URL. Useful for reading documentation or articles.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL to fetch (http/https)" },
-      },
-      required: ["url"],
-    },
-  },
+  createToolDefinition("fetch_url", "Fetch and extract text content from a URL. Useful for reading documentation or articles.", fetchUrlSchema),
 ];
 
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  fetch_url: fetchUrlSchema,
+};
+
+// ===== Handler =====
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "fetch_url": {
-      const { url } = args as { url: string };
+      const { url } = fetchUrlSchema.parse(args);
       await assertUrlSafe(url);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 30_000);

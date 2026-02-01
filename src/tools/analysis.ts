@@ -1,5 +1,6 @@
 // ========== Code Analysis Tools ==========
 
+import { z } from "zod";
 import { readFile } from "fs/promises";
 import { existsSync } from "fs";
 import { resolve } from "path";
@@ -16,58 +17,50 @@ import {
   formatAnalysisAsSummary,
 } from "../helpers/analysis.js";
 import { assertPathSafe } from "../security.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
+// ===== Schemas =====
+export const analyzeDependenciesSchema = z.object({
+  file_path: z.string().optional().describe("Path to package.json or requirements.txt"),
+  output_format: z.enum(["json", "markdown", "summary", "legacy"]).optional().default("json").describe("Output format: json (structured), markdown (readable), summary (compact), legacy (original format)"),
+});
+
+export const findUnusedExportsSchema = z.object({
+  dir_path: z.string().optional().default(".").describe("Directory to scan"),
+  output_format: z.enum(["json", "markdown", "summary", "legacy"]).optional().default("json").describe("Output format: json (structured), markdown (readable), summary (compact), legacy (original format)"),
+});
+
+export const checkTypesSchema = z.object({
+  dir_path: z.string().optional().default("."),
+  language: z.enum(["typescript", "python"]).optional().default("typescript"),
+  output_format: z.enum(["json", "markdown", "summary", "legacy"]).optional().default("json").describe("Output format: json (structured), markdown (readable), summary (compact), legacy (raw CLI output)"),
+});
+
+export const runLinterSchema = z.object({
+  dir_path: z.string().optional().default("."),
+  language: z.enum(["typescript", "python"]).optional().default("typescript"),
+  fix: z.boolean().optional().default(false).describe("Auto-fix issues if possible"),
+  output_format: z.enum(["json", "markdown", "summary", "legacy"]).optional().default("json").describe("Output format: json (structured), markdown (readable), summary (compact), legacy (raw CLI output)"),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "analyze_dependencies",
-    description: "Analyze project dependencies from package.json or requirements.txt. Returns structured AnalysisResult with dependency issues.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        file_path: { type: "string", description: "Path to package.json or requirements.txt" },
-        output_format: { type: "string", enum: ["json", "markdown", "summary", "legacy"], default: "json", description: "Output format: json (structured), markdown (readable), summary (compact), legacy (original format)" },
-      },
-    },
-  },
-  {
-    name: "find_unused_exports",
-    description: "Find potentially unused exports in JavaScript/TypeScript files. Returns structured AnalysisResult with unused export issues.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        dir_path: { type: "string", default: ".", description: "Directory to scan" },
-        output_format: { type: "string", enum: ["json", "markdown", "summary", "legacy"], default: "json", description: "Output format: json (structured), markdown (readable), summary (compact), legacy (original format)" },
-      },
-    },
-  },
-  {
-    name: "check_types",
-    description: "Run TypeScript type checking (tsc --noEmit) or Python type checking (mypy/pyright). Returns structured AnalysisResult with issues, severity, and trend tracking.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        dir_path: { type: "string", default: "." },
-        language: { type: "string", enum: ["typescript", "python"], default: "typescript" },
-        output_format: { type: "string", enum: ["json", "markdown", "summary", "legacy"], default: "json", description: "Output format: json (structured), markdown (readable), summary (compact), legacy (raw CLI output)" },
-      },
-    },
-  },
-  {
-    name: "run_linter",
-    description: "Run linter (ESLint for JS/TS, Pylint/Ruff for Python). Returns structured AnalysisResult with issues categorized by severity.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        dir_path: { type: "string", default: "." },
-        language: { type: "string", enum: ["typescript", "python"], default: "typescript" },
-        fix: { type: "boolean", default: false, description: "Auto-fix issues if possible" },
-        output_format: { type: "string", enum: ["json", "markdown", "summary", "legacy"], default: "json", description: "Output format: json (structured), markdown (readable), summary (compact), legacy (raw CLI output)" },
-      },
-    },
-  },
+  createToolDefinition("analyze_dependencies", "Analyze project dependencies from package.json or requirements.txt. Returns structured AnalysisResult with dependency issues.", analyzeDependenciesSchema),
+  createToolDefinition("find_unused_exports", "Find potentially unused exports in JavaScript/TypeScript files. Returns structured AnalysisResult with unused export issues.", findUnusedExportsSchema),
+  createToolDefinition("check_types", "Run TypeScript type checking (tsc --noEmit) or Python type checking (mypy/pyright). Returns structured AnalysisResult with issues, severity, and trend tracking.", checkTypesSchema),
+  createToolDefinition("run_linter", "Run linter (ESLint for JS/TS, Pylint/Ruff for Python). Returns structured AnalysisResult with issues categorized by severity.", runLinterSchema),
 ];
 
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  analyze_dependencies: analyzeDependenciesSchema,
+  find_unused_exports: findUnusedExportsSchema,
+  check_types: checkTypesSchema,
+  run_linter: runLinterSchema,
+};
+
+// ===== Handler =====
 function formatOutput(result: ReturnType<typeof buildAnalysisResult>, output_format: string): string {
   switch (output_format) {
     case "markdown":
@@ -83,8 +76,9 @@ function formatOutput(result: ReturnType<typeof buildAnalysisResult>, output_for
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "analyze_dependencies": {
-      const { output_format = "json" } = args as { file_path?: string; output_format?: string };
-      let { file_path } = args as { file_path?: string };
+      const validated = analyzeDependenciesSchema.parse(args);
+      const output_format = validated.output_format;
+      let file_path = validated.file_path;
       const startTime = Date.now();
 
       // Auto-detect if not provided
@@ -152,7 +146,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
     }
 
     case "find_unused_exports": {
-      const { dir_path = ".", output_format = "json" } = args as { dir_path?: string; output_format?: string };
+      const { dir_path, output_format } = findUnusedExportsSchema.parse(args);
       assertPathSafe(dir_path, "find_unused_exports");
       const fullPath = resolve(dir_path);
       const startTime = Date.now();
@@ -194,7 +188,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
     }
 
     case "check_types": {
-      const { dir_path = ".", language = "typescript", output_format = "json" } = args as { dir_path?: string; language?: string; output_format?: string };
+      const { dir_path, language, output_format } = checkTypesSchema.parse(args);
       assertPathSafe(dir_path, "check_types");
       const fullPath = resolve(dir_path);
       const startTime = Date.now();
@@ -272,7 +266,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
     }
 
     case "run_linter": {
-      const { dir_path = ".", language = "typescript", fix = false, output_format = "json" } = args as { dir_path?: string; language?: string; fix?: boolean; output_format?: string };
+      const { dir_path, language, fix, output_format } = runLinterSchema.parse(args);
       assertPathSafe(dir_path, "run_linter");
       const fullPath = resolve(dir_path);
       const startTime = Date.now();

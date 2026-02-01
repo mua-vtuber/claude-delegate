@@ -1,63 +1,61 @@
 // ========== Shell & Environment Tools ==========
 
+import { z } from "zod";
 import { readFile } from "fs/promises";
 import { existsSync } from "fs";
 import { resolve } from "path";
 import { execFilePromise, SHELL_TIMEOUT } from "../config.js";
 import { envOverrides } from "../state.js";
 import { assertCommandAllowed, assertArgsAllowed, assertPathSafe, isSensitiveEnvVar } from "../security.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
+// ===== Schemas =====
+export const shellExecuteSchema = z.object({
+  command: z.string().describe("Command to execute"),
+  args: z.array(z.string()).optional().describe("Command arguments"),
+  cwd: z.string().optional().describe("Working directory"),
+  timeout: z.number().optional().describe("Timeout in milliseconds"),
+});
+
+export const envGetSchema = z.object({
+  name: z.string().describe("Variable name"),
+});
+
+export const envSetSchema = z.object({
+  name: z.string().describe("Variable name"),
+  value: z.string().describe("Variable value"),
+});
+
+export const dotenvParseSchema = z.object({
+  file_path: z.string().optional().default(".env").describe("Path to .env file"),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "shell_execute",
-    description: "Execute a shell command safely. Returns stdout, stderr, and exit code.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        command: { type: "string", description: "Command to execute" },
-        args: { type: "array", items: { type: "string" }, description: "Command arguments" },
-        cwd: { type: "string", description: "Working directory" },
-        timeout: { type: "number", description: "Timeout in milliseconds", default: 30000 },
-      },
-      required: ["command"],
-    },
-  },
-  {
-    name: "env_get",
-    description: "Get environment variable value.",
-    inputSchema: {
-      type: "object",
-      properties: { name: { type: "string", description: "Variable name" } },
-      required: ["name"],
-    },
-  },
-  {
-    name: "env_set",
-    description: "Set environment variable (session only).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Variable name" },
-        value: { type: "string", description: "Variable value" },
-      },
-      required: ["name", "value"],
-    },
-  },
-  {
-    name: "dotenv_parse",
-    description: "Parse a .env file and return key-value pairs.",
-    inputSchema: {
-      type: "object",
-      properties: { file_path: { type: "string", description: "Path to .env file", default: ".env" } },
-    },
-  },
+  createToolDefinition("shell_execute", "Execute a shell command safely. Returns stdout, stderr, and exit code.", shellExecuteSchema),
+  createToolDefinition("env_get", "Get environment variable value.", envGetSchema),
+  createToolDefinition("env_set", "Set environment variable (session only).", envSetSchema),
+  createToolDefinition("dotenv_parse", "Parse a .env file and return key-value pairs.", dotenvParseSchema),
 ];
 
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  shell_execute: shellExecuteSchema,
+  env_get: envGetSchema,
+  env_set: envSetSchema,
+  dotenv_parse: dotenvParseSchema,
+};
+
+// ===== Handler =====
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "shell_execute": {
-      const { command, args: cmdArgs = [], cwd, timeout = SHELL_TIMEOUT } = args as { command: string; args?: string[]; cwd?: string; timeout?: number };
+      const validated = shellExecuteSchema.parse(args);
+      const command = validated.command;
+      const cmdArgs = validated.args ?? [];
+      const cwd = validated.cwd;
+      const timeout = validated.timeout ?? SHELL_TIMEOUT;
       assertCommandAllowed(command);
       assertArgsAllowed(command, cmdArgs);
       const options: any = { timeout };
@@ -72,7 +70,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       }
     }
     case "env_get": {
-      const { name: varName } = args as { name: string };
+      const { name: varName } = envGetSchema.parse(args);
       if (isSensitiveEnvVar(varName)) {
         return { content: [{ type: "text", text: "[REDACTED] - sensitive environment variable" }] };
       }
@@ -80,7 +78,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       return { content: [{ type: "text", text: value !== null ? value : `Environment variable '${varName}' not found` }] };
     }
     case "env_set": {
-      const { name: varName, value } = args as { name: string; value: string };
+      const { name: varName, value } = envSetSchema.parse(args);
       if (isSensitiveEnvVar(varName)) {
         throw new Error(`Security: Cannot set sensitive variable '${varName}'`);
       }
@@ -92,7 +90,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       return { content: [{ type: "text", text: `Set ${varName}=${value} (session only)` }] };
     }
     case "dotenv_parse": {
-      const { file_path = ".env" } = args as { file_path?: string };
+      const { file_path } = dotenvParseSchema.parse(args);
       const fullPath = assertPathSafe(file_path, "dotenv_parse");
       if (!existsSync(fullPath)) return { content: [{ type: "text", text: `File not found: ${fullPath}` }] };
 

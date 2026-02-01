@@ -1,29 +1,33 @@
 // ========== Database Tools ==========
 
+import { z } from "zod";
 import { existsSync } from "fs";
 import { execFilePromise } from "../config.js";
 import { assertPathSafe } from "../security.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
+// ===== Schemas =====
+export const sqliteQuerySchema = z.object({
+  db_path: z.string().describe("Path to .sqlite or .db file"),
+  query: z.string().describe("SQL query to execute (SELECT only recommended)"),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "sqlite_query",
-    description: "Execute a SQL query on a SQLite database file using 'sqlite3' CLI. Returns the result as JSON.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        db_path: { type: "string", description: "Path to .sqlite or .db file" },
-        query: { type: "string", description: "SQL query to execute (SELECT only recommended)" },
-      },
-      required: ["db_path", "query"],
-    },
-  },
+  createToolDefinition("sqlite_query", "Execute a SQL query on a SQLite database file using 'sqlite3' CLI. Returns the result as JSON.", sqliteQuerySchema),
 ];
 
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  sqlite_query: sqliteQuerySchema,
+};
+
+// ===== Handler =====
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "sqlite_query": {
-      const { db_path, query } = args as { db_path: string; query: string };
+      const { db_path, query } = sqliteQuerySchema.parse(args);
       const fullPath = assertPathSafe(db_path, "sqlite_query");
       if (!existsSync(fullPath)) throw new Error(`DB file not found: ${fullPath}`);
 

@@ -1,8 +1,10 @@
+import { z } from "zod";
 import { assertPathSafe } from "../security.js";
 import { ollamaChat } from "../helpers/ollama.js";
 import { OLLAMA_MODELS } from "../helpers/routing.js";
 import { LocalVectorStore } from "../helpers/vectorstore.js";
 import { saveReviewToFile } from "../helpers/filesystem.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
 // Shared vector store instance
@@ -15,50 +17,42 @@ function getStore(): LocalVectorStore {
   return vectorStore;
 }
 
+// ===== Schemas =====
+export const ragIndexSchema = z.object({
+  paths: z.array(z.string()).describe("Files or directories to index"),
+  clear: z.boolean().optional().default(false).describe("Clear existing index first"),
+  save: z.boolean().optional().default(true).describe("Save index to disk after indexing"),
+});
+
+export const ragSearchSchema = z.object({
+  query: z.string().describe("Search query"),
+  top_k: z.number().optional().default(5).describe("Number of results to return"),
+});
+
+export const ragAskSchema = z.object({
+  question: z.string().describe("Question to answer"),
+  top_k: z.number().optional().default(5).describe("Number of context chunks to retrieve"),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "rag_index",
-    description: "Index a directory or file list into the vector store for RAG search. Uses Ollama embeddings.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        paths: { type: "array", items: { type: "string" }, description: "Files or directories to index" },
-        clear: { type: "boolean", default: false, description: "Clear existing index first" },
-        save: { type: "boolean", default: true, description: "Save index to disk after indexing" },
-      },
-      required: ["paths"],
-    },
-  },
-  {
-    name: "rag_search",
-    description: "Search the vector index for code chunks relevant to a query. Returns top-K similar chunks.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query" },
-        top_k: { type: "number", default: 5, description: "Number of results to return" },
-      },
-      required: ["query"],
-    },
-  },
-  {
-    name: "rag_ask",
-    description: "RAG-powered question answering: search relevant code, then ask Ollama to answer based on retrieved context.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        question: { type: "string", description: "Question to answer" },
-        top_k: { type: "number", default: 5, description: "Number of context chunks to retrieve" },
-      },
-      required: ["question"],
-    },
-  },
+  createToolDefinition("rag_index", "Index a directory or file list into the vector store for RAG search. Uses Ollama embeddings.", ragIndexSchema),
+  createToolDefinition("rag_search", "Search the vector index for code chunks relevant to a query. Returns top-K similar chunks.", ragSearchSchema),
+  createToolDefinition("rag_ask", "RAG-powered question answering: search relevant code, then ask Ollama to answer based on retrieved context.", ragAskSchema),
 ];
 
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  rag_index: ragIndexSchema,
+  rag_search: ragSearchSchema,
+  rag_ask: ragAskSchema,
+};
+
+// ===== Handler =====
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "rag_index": {
-      const { paths, clear = false, save = true } = args as { paths: string[]; clear?: boolean; save?: boolean };
+      const { paths, clear, save } = ragIndexSchema.parse(args);
       const store = getStore();
 
       if (clear) store.clear();
@@ -96,7 +90,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
     }
 
     case "rag_search": {
-      const { query, top_k = 5 } = args as { query: string; top_k?: number };
+      const { query, top_k } = ragSearchSchema.parse(args);
       const store = getStore();
 
       // Auto-load if empty
@@ -123,7 +117,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
     }
 
     case "rag_ask": {
-      const { question, top_k = 5 } = args as { question: string; top_k?: number };
+      const { question, top_k } = ragAskSchema.parse(args);
       const store = getStore();
 
       // Auto-load if empty

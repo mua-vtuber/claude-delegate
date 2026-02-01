@@ -1,4 +1,4 @@
-import { toolSchemas } from "./schemas.js";
+import { schemaMap as toolSchemas } from "./validation.js";
 import type { CallToolResult } from "./types.js";
 import { logger } from "./logger.js";
 

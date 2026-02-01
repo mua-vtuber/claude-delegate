@@ -1,47 +1,39 @@
 // ========== System Setup Tools ==========
 
+import { z } from "zod";
 import { readFile, writeFile } from "fs/promises";
-import { existsSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import { resolve, join } from "path";
 import { ollamaRequest, ollamaPull } from "../helpers/ollama.js";
 import { detectGpu, buildSystemProfile, loadCachedProfile, saveCachedProfile } from "../helpers/profiler.js";
 import { OLLAMA_MODELS } from "../helpers/routing.js";
 import { PROJECT_ROOT } from "../config.js";
+import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult, SystemProfile } from "../types.js";
 
+// ===== Schemas =====
+export const systemProfileSchema = z.object({
+  force_refresh: z.boolean().optional().default(false).describe("Force re-detection even if cached profile exists (default: false)"),
+});
+
+export const autoSetupSchema = z.object({
+  dry_run: z.boolean().optional().default(false).describe("Only report what would be done without making changes (default: false)"),
+  skip_pull: z.boolean().optional().default(false).describe("Skip model downloads, only detect and save profile (default: false)"),
+});
+
+// ===== Definitions =====
 export const definitions = [
-  {
-    name: "system_profile",
-    description: "Detect GPU/VRAM and calculate optimal Ollama model configuration. Returns per-model VRAM fit analysis and recommended num_ctx values.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        force_refresh: {
-          type: "boolean",
-          description: "Force re-detection even if cached profile exists (default: false)",
-        },
-      },
-    },
-  },
-  {
-    name: "auto_setup",
-    description: "Automatically configure Ollama for this machine: detect hardware, calculate optimal settings, install recommended models, configure Claude settings.json permissions, and add MCP tool documentation to CLAUDE.md. Run once on new machines.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        dry_run: {
-          type: "boolean",
-          description: "Only report what would be done without making changes (default: false)",
-        },
-        skip_pull: {
-          type: "boolean",
-          description: "Skip model downloads, only detect and save profile (default: false)",
-        },
-      },
-    },
-  },
+  createToolDefinition("delegate_system_profile", "Detect GPU/VRAM and calculate optimal Ollama model configuration. Returns per-model VRAM fit analysis and recommended num_ctx values.", systemProfileSchema),
+  createToolDefinition("delegate_setup", "Automatically configure Ollama for this machine: detect hardware, calculate optimal settings, install recommended models, configure Claude settings.json permissions, and add MCP tool documentation to CLAUDE.md. Run once on new machines.", autoSetupSchema),
 ];
 
+// ===== Schema Exports =====
+export const allSchemas: Record<string, z.ZodType> = {
+  delegate_system_profile: systemProfileSchema,
+  delegate_setup: autoSetupSchema,
+};
+
+// ===== Handler =====
 async function runSystemProfile(forceRefresh: boolean): Promise<SystemProfile> {
   if (!forceRefresh) {
     const cached = await loadCachedProfile();
@@ -62,10 +54,29 @@ async function runSystemProfile(forceRefresh: boolean): Promise<SystemProfile> {
 const MCP_PERMISSION = "mcp__claude-delegate__*";
 
 async function ensureSettingsPermission(): Promise<{ action: string }> {
-  const settingsPath = resolve(join(PROJECT_ROOT, ".claude", "settings.json"));
+  const claudeDir = resolve(join(PROJECT_ROOT, ".claude"));
+  const settingsPath = resolve(join(claudeDir, "settings.json"));
 
   if (!existsSync(settingsPath)) {
-    return { action: "settings_not_found" };
+    try {
+      // Create .claude directory if it doesn't exist
+      if (!existsSync(claudeDir)) {
+        mkdirSync(claudeDir, { recursive: true });
+      }
+
+      // Create minimal settings.json with permission already included
+      const minimalSettings = {
+        permissions: {
+          allow: [MCP_PERMISSION],
+        },
+      };
+
+      await writeFile(settingsPath, JSON.stringify(minimalSettings, null, 2) + "\n", "utf-8");
+      return { action: "created" };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { action: `error_creating: ${message}` };
+    }
   }
 
   try {
@@ -90,6 +101,9 @@ async function ensureSettingsPermission(): Promise<{ action: string }> {
 }
 
 const CLAUDE_MD_SECTION_MARKER = "<!-- LOCAL_LLM_MCP_SECTION -->";
+
+const SKILL_VERSION = "1.0.0";
+const SKILL_VERSION_MARKER = `<!-- CLAUDE-DELEGATE-SKILL v${SKILL_VERSION} -->`;
 
 async function ensureClaudeMdSection(profile: SystemProfile): Promise<{ action: string }> {
   const claudeMdPath = resolve(join(PROJECT_ROOT, "CLAUDE.md"));
@@ -139,20 +153,195 @@ These tools are FREE (local Ollama) — prefer them over Claude token-consuming 
   }
 }
 
+async function ensureSkillInstallation(profile: SystemProfile): Promise<{ action: string }> {
+  const skillDir = resolve(join(PROJECT_ROOT, ".claude", "skills", "claude-delegate-guide"));
+  const skillPath = resolve(join(skillDir, "SKILL.md"));
+
+  // Check existing skill and version before making any changes
+  const existed = existsSync(skillPath);
+  if (existed) {
+    try {
+      const existing = await readFile(skillPath, "utf-8");
+      if (existing.includes(SKILL_VERSION_MARKER)) {
+        return { action: "already_configured" };
+      }
+      // Older version exists — will update
+    } catch {
+      // Can't read — will overwrite
+    }
+  }
+
+  // Build dynamic content based on profile
+  const usableTiers = (["light", "fast", "powerful"] as const)
+    .filter((t) => profile.models[t].fits_vram)
+    .map((t) => `${t} (${profile.models[t].model_name})`)
+    .join(", ");
+
+  const isCpuOnly = profile.gpu.detected_via === "none";
+
+  const skillContent = `${SKILL_VERSION_MARKER}
+---
+name: "claude-delegate-guide"
+description: "Usage guide for claude-delegate MCP server — hybrid LLM routing with Ollama and Gemini CLI for token savings"
+version: ${SKILL_VERSION}
+category: "tool"
+modularized: false
+user-invocable: false
+tags: ['claude-delegate', 'ollama', 'gemini', 'local-llm', 'mcp', 'translate', 'code-review']
+updated: ${new Date().toISOString().split("T")[0]}
+allowed-tools:
+  - Read
+  - Bash
+  - Grep
+  - Glob
+status: "active"
+
+triggers:
+  keywords:
+    - ollama
+    - gemini
+    - local-llm
+    - translate
+    - translate_file
+    - code_review
+    - smart_ask
+    - delegate_setup
+    - VRAM
+    - GPU
+    - token savings
+    - claude-delegate
+---
+
+# Claude Delegate MCP Server Guide
+
+## Quick Reference
+
+This project has a local LLM MCP server (claude-delegate) with 60 tools.
+System: ${profile.gpu.name}, ${profile.gpu.vram_total_mb}MB VRAM
+Available models: ${usableTiers || "none (CPU-only mode)"}
+
+## Token-Saving Tools (Use These First)
+
+These tools process files server-side, saving 99.5% of Claude API tokens:
+
+| Task | Tool | Token Savings |
+|------|------|--------------|
+| Translate a file | \`translate_file\` | ~99.5% (send path, not content) |
+| Analyze a file | \`ollama_analyze_file\` | ~99.5% |
+| Analyze multiple files | \`ollama_analyze_files\` | ~99.5% |
+| Code review | \`code_review\` | ~95% |
+| Simple questions | \`smart_ask\` | 100% (free local model) |
+
+## Smart Routing
+
+| Task Type | Recommended Tool | Model Used |
+|-----------|-----------------|------------|
+| Translation | \`translate_file\`, \`translate_text\` | 7B (Light) |
+| Code review | \`code_review\` | 14B (Fast) |
+| Quick questions | \`smart_ask\`, \`ollama_chat\` | Auto (complexity-based) |
+| Deep analysis | \`gemini_analyze_codebase\` | Gemini 1M context |
+| Compare answers | \`compare_models\` | Ollama + Gemini side-by-side |
+| Autonomous tasks | \`ollama_agent\` | 14B (Fast) |
+
+## Model Selection
+
+Models are automatically selected based on task purpose and VRAM:
+
+| Tier | Model | VRAM Required | Best For |
+|------|-------|--------------|----------|
+| Light (7B) | \`OLLAMA_MODEL_LIGHT\` | ~5 GB | Translation, simple tasks |
+| Fast (14B) | \`OLLAMA_MODEL_FAST\` | ~10 GB | Code review, agents |
+| Powerful (32B) | \`OLLAMA_MODEL_POWERFUL\` | ~18 GB | Complex analysis |
+
+### VRAM-Aware Downgrade
+
+If a model exceeds available VRAM, it automatically downgrades:
+
+\`\`\`
+32B requested → VRAM insufficient → auto-switch to 14B
+14B requested → VRAM insufficient → auto-switch to 7B
+\`\`\`
+${isCpuOnly ? `
+### CPU-Only Mode
+
+No NVIDIA GPU detected. Ollama runs on system RAM (CPU mode).
+Expected performance:
+- 7B: ~5-15 tokens/sec (usable for translation)
+- 14B: ~2-8 tokens/sec (slow but functional)
+- 32B: not recommended (too slow)
+
+GPU acceleration is strongly recommended for better experience.
+` : ""}
+## Gemini Integration
+
+Gemini CLI provides 1M token context for large codebase analysis:
+
+| Tool | Use When |
+|------|----------|
+| \`gemini_ask\` | Large context questions (auto-fallback to Ollama) |
+| \`gemini_analyze_codebase\` | Full codebase analysis |
+
+If Gemini fails (auth error, token limit), automatic fallback to Ollama occurs.
+Response shows \`[Fallback: Ollama]\` indicator.
+
+## All Tool Categories
+
+| Category | Count | Key Tools |
+|----------|-------|-----------|
+| LLM Chat & Analysis | 12 | \`ollama_chat\`, \`smart_ask\`, \`gemini_ask\` |
+| LLM Utilities | 9 | \`translate_file\`, \`summarize_text\`, \`explain_code\` |
+| File System | 4 | \`fs_read_file\`, \`fs_write_file\`, \`fs_search_files\` |
+| Productivity | 5 | \`code_review\`, \`git_commit_helper\`, \`generate_unit_test\` |
+| Code Analysis | 4 | \`check_types\`, \`run_linter\`, \`analyze_dependencies\` |
+| Knowledge Graph | 5 | \`memory_add_node\`, \`memory_query_graph\` |
+| Shell & Process | 8 | \`shell_execute\`, \`process_list\`, \`background_run\` |
+| GitHub | 3 | \`gh_create_pr\`, \`gh_list_issues\` |
+| Other | 10 | \`fetch_url\`, \`sqlite_query\`, \`health_check\` |
+
+## Troubleshooting
+
+Run \`health_check\` to verify service status:
+
+| Check | What It Verifies |
+|-------|-----------------|
+| Ollama connection | Server running at configured host |
+| Model availability | Required models installed |
+| Gemini CLI | Authentication and binary found |
+
+## Setup
+
+If tools aren't working, run:
+\`\`\`
+delegate_setup()           // Full setup (detect, install, configure)
+delegate_setup({ dry_run: true })  // Preview without changes
+health_check()         // Diagnose issues
+\`\`\`
+`;
+
+  try {
+    if (!existsSync(skillDir)) {
+      mkdirSync(skillDir, { recursive: true });
+    }
+
+    await writeFile(skillPath, skillContent, "utf-8");
+    return { action: existed ? "updated" : "created" };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { action: `error: ${message}` };
+  }
+}
+
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
-    case "system_profile": {
-      const { force_refresh = false } = args as { force_refresh?: boolean };
+    case "delegate_system_profile": {
+      const { force_refresh } = systemProfileSchema.parse(args);
       const profile = await runSystemProfile(force_refresh);
       return {
         content: [{ type: "text", text: JSON.stringify(profile, null, 2) }],
       };
     }
-    case "auto_setup": {
-      const { dry_run = false, skip_pull = false } = args as {
-        dry_run?: boolean;
-        skip_pull?: boolean;
-      };
+    case "delegate_setup": {
+      const { dry_run, skip_pull } = autoSetupSchema.parse(args);
 
       // Step 1: Profile the system
       const profile = await runSystemProfile(true);
@@ -215,6 +404,10 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
         ? { action: "would_configure" }
         : await ensureClaudeMdSection(profile);
 
+      const skillResult = dry_run
+        ? { action: "would_configure" }
+        : await ensureSkillInstallation(profile);
+
       const isCpuOnly = profile.gpu.detected_via === "none";
       const result = {
         profile: {
@@ -225,6 +418,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
         configuration: {
           settings_json: settingsResult.action,
           claude_md: claudeMdResult.action,
+          skill_guide: skillResult.action,
         },
         summary: {
           gpu: profile.gpu.name,
