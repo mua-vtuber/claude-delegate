@@ -194,7 +194,7 @@ async function routeToLLM(
   if (useGemini) {
     return (await runGeminiCLI([prompt])).trim();
   }
-  return (await ollamaChat(OLLAMA_MODELS.fast, prompt)).trim();
+  return (await ollamaChat(OLLAMA_MODELS.fast, prompt)).text.trim();
 }
 
 // ===== Handler =====
@@ -340,11 +340,18 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
         : `Translate the following text to ${target_lang}. Return ONLY the translation, nothing else:\n\n${text}`;
 
       const useGemini = model === "gemini" || (model === MODEL_AUTO && text.length > 2000);
-      const response = useGemini
-        ? await runGeminiCLI([prompt])
-        : await ollamaChat(selectOllamaModel(prompt, undefined, "translation").model, prompt);
+      let responseText: string;
+      let sourceInfo: string;
+      if (useGemini) {
+        responseText = await runGeminiCLI([prompt]);
+        sourceInfo = "Gemini";
+      } else {
+        const result = await ollamaChat(selectOllamaModel(prompt, undefined, "translation").model, prompt);
+        responseText = result.text;
+        sourceInfo = result.model;
+      }
 
-      return { content: [{ type: "text", text: response.trim() }] };
+      return { content: [{ type: "text", text: `${responseText.trim()}\n\n---\n[model: ${sourceInfo}]` }] };
     }
     case "translate_file": {
       const { file_path, target_lang, source_lang, output_path, model, num_ctx } = translateFileSchema.parse(args);
@@ -365,17 +372,18 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
         : `Translate the following text to ${target_lang}. Preserve all markdown formatting, code blocks, and document structure:\n\n${fileContent}`;
 
       const ollamaOptions: Record<string, unknown> | undefined = num_ctx !== 32768 ? { num_ctx } : undefined;
-      const response = await ollamaChat(selectedModel, prompt, system, ollamaOptions);
+      const { text: response, model: usedModel } = await ollamaChat(selectedModel, prompt, system, ollamaOptions);
+      const preview = response.trim().split("\n").slice(0, 5).join("\n");
 
       if (output_path) {
         assertPathSafe(output_path, "translate_file_output");
         const outFullPath = resolve(output_path);
         await writeFile(outFullPath, response.trim(), "utf-8");
-        return { content: [{ type: "text", text: `Translation saved to: ${outFullPath}` }] };
+        return { content: [{ type: "text", text: `Translation saved to: ${outFullPath}\n[model: ${usedModel}]\n\nPreview:\n${preview}\n...` }] };
       }
 
       const savedPath = await saveReviewToFile(response.trim(), `translation-${target_lang.toLowerCase()}`);
-      return { content: [{ type: "text", text: `Translation saved to: ${savedPath}` }] };
+      return { content: [{ type: "text", text: `Translation saved to: ${savedPath}\n[model: ${usedModel}]\n\nPreview:\n${preview}\n...` }] };
     }
     case "summarize_text": {
       const { text, style, max_length, model } = summarizeTextSchema.parse(args);

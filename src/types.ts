@@ -129,3 +129,27 @@ export interface SystemProfile {
 }
 
 export type ModelPurpose = "translation" | "code_review" | "agent" | "analysis" | "general";
+
+// ============================================
+// Collaborative Code Review Types
+// ============================================
+
+export interface CodeReviewMessage {
+  role: "system" | "claude" | "gemini";
+  content: string;
+  timestamp: string;
+}
+
+export interface CodeReviewSession {
+  id: string;
+  dir_path: string;
+  focus: string;
+  source_files: string[];
+  messages: CodeReviewMessage[];
+  round: number;
+  max_rounds: number;
+  status: "active" | "completed" | "expired";
+  created_at: number;
+  last_activity: number;
+  log_path?: string;
+}

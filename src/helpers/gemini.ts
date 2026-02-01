@@ -158,7 +158,29 @@ export async function runGeminiWithFallback(prompt: string, timeout?: number): P
     // Fallback to Ollama
     const message = err instanceof Error ? err.message : String(err);
     console.error(`Gemini failed (${message}), falling back to Ollama...`);
-    const response = await ollamaChat(OLLAMA_MODEL_POWERFUL, prompt);
-    return { response, source: "ollama" };
+    const { text } = await ollamaChat(OLLAMA_MODEL_POWERFUL, prompt);
+    return { response: text, source: "ollama" };
   }
+}
+
+/**
+ * Check if Gemini CLI is available without throwing.
+ * Returns availability status with path or diagnostic message.
+ */
+export async function isGeminiCliAvailable(): Promise<{
+  available: boolean;
+  path?: string;
+  message?: string;
+}> {
+  const isWindows = process.platform === "win32";
+  if (isWindows) {
+    const geminiPath = await findGeminiCliPath();
+    if (geminiPath) return { available: true, path: geminiPath };
+    return {
+      available: false,
+      message: "Gemini CLI not found on Windows. Install with: npm install -g @google/gemini-cli",
+    };
+  }
+  // Non-Windows: gemini used via PATH
+  return { available: true, path: "gemini (via PATH)" };
 }

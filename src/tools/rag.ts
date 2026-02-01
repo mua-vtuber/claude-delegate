@@ -144,11 +144,11 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       // Step 3: Ask LLM with context
       const prompt = `Based on the following code context, answer the question.\n\n## Retrieved Code Context:\n${context}\n\n## Question:\n${question}\n\nProvide a detailed answer based on the code above.`;
 
-      const response = await ollamaChat(OLLAMA_MODELS.powerful, prompt);
+      const { text: response, model: usedModel } = await ollamaChat(OLLAMA_MODELS.powerful, prompt);
 
       // Save to file
       const reviewPath = await saveReviewToFile(
-        `# RAG Answer\n\n**Question:** ${question}\n**Chunks retrieved:** ${results.length}\n\n---\n\n${response}\n\n---\n\n## Retrieved Context\n\n${context}`,
+        `# RAG Answer\n\n**Question:** ${question}\n**Chunks retrieved:** ${results.length}\n**Model:** ${usedModel}\n\n---\n\n${response}\n\n---\n\n## Retrieved Context\n\n${context}`,
         "rag_answer"
       );
 

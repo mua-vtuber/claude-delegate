@@ -2,7 +2,7 @@
 // State Storage & Cleanup
 // ============================================
 
-import type { ThinkingStep, GraphNode, GraphRelation, AnalysisResult, SystemProfile } from "./types.js";
+import type { ThinkingStep, GraphNode, GraphRelation, AnalysisResult, SystemProfile, CodeReviewSession } from "./types.js";
 
 export const thinkingSteps: Map<string, ThinkingStep[]> = new Map();
 export const knowledgeGraph: { nodes: GraphNode[]; relations: GraphRelation[] } = { nodes: [], relations: [] };
@@ -15,6 +15,9 @@ export const promptTemplates: Map<string, string> = new Map();
 
 // Analysis cache for trend tracking
 export const analysisCache: Map<string, { result: AnalysisResult; timestamp: number }> = new Map();
+
+// Code review collaborative session storage
+export const reviewSessions: Map<string, CodeReviewSession> = new Map();
 
 // System profile cache for VRAM-aware routing
 export let cachedSystemProfile: SystemProfile | null = null;
@@ -30,6 +33,8 @@ const MAX_CACHE_SIZE = 1000;
 const MAX_ANALYSIS_CACHE_SIZE = 500;
 const MAX_THINKING_SESSIONS = 100;
 const CACHE_CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const MAX_REVIEW_SESSIONS = 5;
+const REVIEW_SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
 function cleanupExpiredCache() {
   const now = Date.now();
@@ -72,6 +77,24 @@ function cleanupBackgroundProcesses() {
   }
 }
 
+function cleanupReviewSessions() {
+  const now = Date.now();
+  for (const [id, session] of reviewSessions.entries()) {
+    if (now - session.last_activity > REVIEW_SESSION_EXPIRY_MS) {
+      reviewSessions.delete(id);
+    }
+    if (session.status === "completed") {
+      reviewSessions.delete(id);
+    }
+  }
+  if (reviewSessions.size > MAX_REVIEW_SESSIONS) {
+    const entries = Array.from(reviewSessions.entries())
+      .sort((a, b) => a[1].last_activity - b[1].last_activity);
+    const toDelete = entries.slice(0, reviewSessions.size - MAX_REVIEW_SESSIONS);
+    toDelete.forEach(([key]) => reviewSessions.delete(key));
+  }
+}
+
 // Store timer reference for graceful shutdown
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -80,6 +103,7 @@ export function startCleanupTimers(): void {
     cleanupExpiredCache();
     cleanupThinkingSessions();
     cleanupBackgroundProcesses();
+    cleanupReviewSessions();
   }, CACHE_CLEANUP_INTERVAL);
 }
 

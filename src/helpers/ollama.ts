@@ -88,15 +88,20 @@ export async function ollamaRequest(endpoint: string, body?: object): Promise<an
  * @param prompt - User prompt or message
  * @param system - Optional system prompt (default: "You are a helpful assistant.")
  * @param options - Optional generation parameters (temperature, num_ctx, etc.)
- * @returns Generated text response from the model
+ * @returns Object with generated text and model name used
  * @throws Error if Ollama server is unreachable
  */
+export interface OllamaResult {
+  text: string;
+  model: string;
+}
+
 export async function ollamaChat(
   model: string,
   prompt: string,
   system?: string,
   options?: Record<string, unknown>
-): Promise<string> {
+): Promise<OllamaResult> {
   // Auto-inject optimal num_ctx from system profile
   const effectiveOptions: Record<string, unknown> = options ? { ...options } : {};
   if (!effectiveOptions.num_ctx) {
@@ -115,7 +120,7 @@ export async function ollamaChat(
   }
 
   const result = await ollamaFetch("/api/generate", body, OLLAMA_TIMEOUTS.generate);
-  return result.response;
+  return { text: result.response, model: result.model || model };
 }
 
 // ============================================

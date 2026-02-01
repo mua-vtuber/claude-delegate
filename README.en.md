@@ -7,7 +7,7 @@ English | [한국어](README.md)
 
 A **local LLM (Ollama)** + **cloud LLM (Gemini CLI)** integration MCP server for Claude Code.
 
-Provides **60 tools** for file manipulation, code analysis, web research, database inspection, and workflow automation.
+Provides **61 tools** for file manipulation, code analysis, web research, database inspection, and workflow automation.
 
 ## Key Features
 
@@ -84,7 +84,7 @@ This command automatically performs:
 
 ---
 
-## Tool List (60 tools)
+## Tool List (61 tools)
 
 ### Tool Categories
 
@@ -93,7 +93,7 @@ This command automatically performs:
 | **Ollama / Gemini LLM** | 12 | Chat, file analysis, agent, embeddings, model comparison |
 | **LLM Utilities** | 9 | Translation, summarization, code explanation, templates |
 | **File System** | 4 | Read, write, list, search |
-| **Productivity** | 5 | Code review, commit messages, tests, docstrings, TODO |
+| **Productivity** | 6 | Code review, commit messages, tests, docstrings, TODO |
 | **Code Analysis** | 4 | Type checking, linting, dependency analysis, unused exports |
 | **Knowledge Graph** | 5 | Node/relation management, queries, save/load |
 | **Shell / Environment** | 4 | Execute commands, environment variables, .env parsing |
@@ -148,11 +148,12 @@ This command automatically performs:
 | `fs_list_directory` | List directory |
 | `fs_search_files` | Search file content (regex) |
 
-### Productivity (5)
+### Productivity (6)
 
 | Tool | Description |
 |------|-------------|
-| `code_review` | Code review (save result to file) |
+| `code_review` | Start Claude+Gemini collaborative code review session |
+| `code_review_discuss` | Continue or end code review discussion |
 | `git_commit_helper` | Generate commit message from git diff |
 | `generate_unit_test` | Auto-generate unit tests |
 | `add_docstrings` | Auto-add docstrings |
@@ -244,7 +245,7 @@ Each tool knows its purpose and automatically selects the optimal model:
 | Purpose | Model | Examples |
 |---------|-------|----------|
 | Translation | 7B (Light) | `translate_file`, `translate_text` |
-| Code Review | 14B (Fast) | `code_review` |
+| Code Review | Gemini CLI | `code_review` + `code_review_discuss` |
 | Agent | 14B (Fast) | `ollama_agent` |
 | Analysis/General | Complexity-based auto | `smart_ask`, `ollama_chat` |
 
@@ -342,7 +343,7 @@ claude-delegate/
 │   │   ├── routing.ts    # Model selection (purpose/complexity/VRAM)
 │   │   ├── profiler.ts   # GPU detection, VRAM calculation, profiling
 │   │   └── filesystem.ts # File system helpers
-│   ├── tools/            # 17 tool modules (60 tools)
+│   ├── tools/            # 17 tool modules (61 tools)
 │   └── __tests__/        # Tests
 ├── .mcp-profile.json     # System profile cache (created by delegate_setup)
 ├── .ai_reviews/          # Analysis result storage

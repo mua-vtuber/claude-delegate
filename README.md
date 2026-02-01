@@ -4,7 +4,7 @@
 
 Claude Code를 위한 **로컬 LLM(Ollama)** + **클라우드 LLM(Gemini CLI)** 통합 MCP 서버입니다.
 
-파일 조작, 코드 분석, 웹 리서치, 데이터베이스 검사, 워크플로우 자동화 등 **60개 도구**를 제공합니다.
+파일 조작, 코드 분석, 웹 리서치, 데이터베이스 검사, 워크플로우 자동화 등 **61개 도구**를 제공합니다.
 
 ## 핵심 기능
 
@@ -81,7 +81,7 @@ MCP 서버 등록 후 Claude에게 `delegate_setup` 도구를 한 번 실행하�
 
 ---
 
-## 도구 목록 (60개)
+## 도구 목록 (61개)
 
 ### Ollama / Gemini LLM (12)
 
@@ -123,11 +123,12 @@ MCP 서버 등록 후 Claude에게 `delegate_setup` 도구를 한 번 실행하�
 | `fs_list_directory` | 디렉토리 목록 |
 | `fs_search_files` | 파일 내용 검색 (정규식) |
 
-### 개발 생산성 (5)
+### 개발 생산성 (6)
 
 | 도구 | 설명 |
 |------|------|
-| `code_review` | 코드 리뷰 (결과 파일 저장) |
+| `code_review` | Claude+Gemini 협업 코드 리뷰 세션 시작 |
+| `code_review_discuss` | 코드 리뷰 토론 계속/종료 |
 | `git_commit_helper` | git diff 기반 커밋 메시지 생성 |
 | `generate_unit_test` | 단위 테스트 자동 생성 |
 | `add_docstrings` | 독스트링 자동 추가 |
@@ -219,7 +220,7 @@ MCP 서버 등록 후 Claude에게 `delegate_setup` 도구를 한 번 실행하�
 | 용도 | 모델 | 예시 |
 |------|------|------|
 | 번역 | 7B (Light) | `translate_file`, `translate_text` |
-| 코드 리뷰 | 14B (Fast) | `code_review` |
+| 코드 리뷰 | Gemini CLI | `code_review` + `code_review_discuss` |
 | 에이전트 | 14B (Fast) | `ollama_agent` |
 | 분석/일반 | 복잡도 기반 자동 | `smart_ask`, `ollama_chat` |
 
@@ -293,7 +294,7 @@ claude-delegate/
 │   │   ├── routing.ts    # 모델 선택 (목적/복잡도/VRAM)
 │   │   ├── profiler.ts   # GPU 감지, VRAM 계산, 프로파일
 │   │   └── filesystem.ts # 파일 시스템 헬퍼
-│   ├── tools/            # 16개 도구 모듈 (60개 도구)
+│   ├── tools/            # 17개 도구 모듈 (61개 도구)
 │   └── __tests__/        # 테스트
 ├── .mcp-profile.json     # 시스템 프로파일 캐시 (delegate_setup 생성)
 ├── .ai_reviews/          # 분석 결과 저장소

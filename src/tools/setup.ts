@@ -102,7 +102,7 @@ async function ensureSettingsPermission(): Promise<{ action: string }> {
 
 const CLAUDE_MD_SECTION_MARKER = "<!-- LOCAL_LLM_MCP_SECTION -->";
 
-const SKILL_VERSION = "1.0.0";
+const SKILL_VERSION = "1.2.0";
 const SKILL_VERSION_MARKER = `<!-- CLAUDE-DELEGATE-SKILL v${SKILL_VERSION} -->`;
 
 async function ensureClaudeMdSection(profile: SystemProfile): Promise<{ action: string }> {
@@ -229,7 +229,7 @@ These tools process files server-side, saving 99.5% of Claude API tokens:
 | Translate a file | \`translate_file\` | ~99.5% (send path, not content) |
 | Analyze a file | \`ollama_analyze_file\` | ~99.5% |
 | Analyze multiple files | \`ollama_analyze_files\` | ~99.5% |
-| Code review | \`code_review\` | ~95% |
+| Code review | \`code_review\` | Claude+Gemini collaborative |
 | Simple questions | \`smart_ask\` | 100% (free local model) |
 
 ## Smart Routing
@@ -237,7 +237,7 @@ These tools process files server-side, saving 99.5% of Claude API tokens:
 | Task Type | Recommended Tool | Model Used |
 |-----------|-----------------|------------|
 | Translation | \`translate_file\`, \`translate_text\` | 7B (Light) |
-| Code review | \`code_review\` | 14B (Fast) |
+| Code review | \`code_review\` + \`code_review_discuss\` | Gemini CLI |
 | Quick questions | \`smart_ask\`, \`ollama_chat\` | Auto (complexity-based) |
 | Deep analysis | \`gemini_analyze_codebase\` | Gemini 1M context |
 | Compare answers | \`compare_models\` | Ollama + Gemini side-by-side |
@@ -261,6 +261,25 @@ If a model exceeds available VRAM, it automatically downgrades:
 32B requested → VRAM insufficient → auto-switch to 14B
 14B requested → VRAM insufficient → auto-switch to 7B
 \`\`\`
+## Response Verification
+
+All Ollama-powered tools include verification aids in their responses:
+
+### Text-Returning Tools
+Responses include a \`[model: model_name]\` tag showing which model was used.
+Example: \`[model: qwen2.5-coder:14b-instruct]\`
+
+### File-Saving Tools
+Responses include:
+- The saved file path
+- \`[model: model_name]\` tag
+- A preview of the first 5 lines of the generated content
+
+When the preview looks insufficient or the task is critical, read the full saved file to verify the result.
+
+### Gemini Fallback Tools
+Responses show \`[Fallback: Ollama]\` when Gemini failed and Ollama was used instead.
+
 ${isCpuOnly ? `
 ### CPU-Only Mode
 
@@ -291,7 +310,7 @@ Response shows \`[Fallback: Ollama]\` indicator.
 | LLM Chat & Analysis | 12 | \`ollama_chat\`, \`smart_ask\`, \`gemini_ask\` |
 | LLM Utilities | 9 | \`translate_file\`, \`summarize_text\`, \`explain_code\` |
 | File System | 4 | \`fs_read_file\`, \`fs_write_file\`, \`fs_search_files\` |
-| Productivity | 5 | \`code_review\`, \`git_commit_helper\`, \`generate_unit_test\` |
+| Productivity | 6 | \`code_review\`, \`code_review_discuss\`, \`git_commit_helper\` |
 | Code Analysis | 4 | \`check_types\`, \`run_linter\`, \`analyze_dependencies\` |
 | Knowledge Graph | 5 | \`memory_add_node\`, \`memory_query_graph\` |
 | Shell & Process | 8 | \`shell_execute\`, \`process_list\`, \`background_run\` |
