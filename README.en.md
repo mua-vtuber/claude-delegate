@@ -2,12 +2,9 @@ English | [한국어](README.md)
 
 # claude-delegate - Hybrid LLM MCP Server
 
-[![npm version](https://img.shields.io/npm/v/claude-delegate.svg)](https://www.npmjs.com/package/claude-delegate)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
 A **local LLM (Ollama)** + **cloud LLM (Gemini CLI)** integration MCP server for Claude Code.
 
-Provides **61 tools** for file manipulation, code analysis, web research, database inspection, and workflow automation.
+Provides **64 tools** for file manipulation, code analysis, web research, database inspection, and workflow automation.
 
 ## Key Features
 
@@ -31,7 +28,7 @@ Provides **61 tools** for file manipulation, code analysis, web research, databa
 ### Install and Build
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/mua-vtuber/claude-delegate.git
 cd claude-delegate
 npm install
 npm run build
@@ -50,6 +47,12 @@ Add to `claude_desktop_config.json` or `.claude.json`:
     }
   }
 }
+```
+
+Or register via Claude Code CLI:
+
+```bash
+claude mcp add claude-delegate node /absolute/path/to/claude-delegate/dist/index.js
 ```
 
 ### Automatic Setup (Recommended)
@@ -84,7 +87,7 @@ This command automatically performs:
 
 ---
 
-## Tool List (61 tools)
+## Tool List (64 tools)
 
 ### Tool Categories
 
@@ -106,7 +109,7 @@ This command automatically performs:
 | **Web** | 1 | URL content fetching |
 | **Database** | 1 | SQLite queries |
 | **Health** | 1 | Service health check |
-| **RAG** | 1 | (Reserved for future) |
+| **RAG** | 3 | Vector indexing, search, RAG Q&A |
 
 ### Ollama / Gemini LLM (12)
 
@@ -225,7 +228,15 @@ This command automatically performs:
 | `delegate_system_profile` | Detect GPU/VRAM and calculate optimal model settings |
 | `delegate_setup` | Hardware detection → model installation → permission setup automation |
 
-### Other Tools (3)
+### RAG (3)
+
+| Tool | Description |
+|------|-------------|
+| `rag_index` | Index directories/files into vector store for RAG search |
+| `rag_search` | Search vector index for relevant code chunks |
+| `rag_ask` | RAG-powered Q&A: search relevant code, then answer via Ollama |
+
+### Other (4)
 
 | Tool | Description |
 |------|-------------|
@@ -335,19 +346,28 @@ claude-delegate/
 │   ├── server.ts         # MCP server setup and dispatch map
 │   ├── config.ts         # Environment variables and constants
 │   ├── types.ts          # TypeScript type definitions
-│   ├── state.ts          # Runtime state (profile cache)
+│   ├── state.ts          # Runtime state (profile cache, review sessions)
 │   ├── security.ts       # Path/command validation
+│   ├── middleware.ts      # Request logging and validation
+│   ├── validation.ts      # Input validation
+│   ├── logger.ts          # Logging utility
 │   ├── helpers/
-│   │   ├── ollama.ts     # Ollama API, tool calling, agent
-│   │   ├── gemini.ts     # Gemini CLI wrapper, fallback
-│   │   ├── routing.ts    # Model selection (purpose/complexity/VRAM)
-│   │   ├── profiler.ts   # GPU detection, VRAM calculation, profiling
-│   │   └── filesystem.ts # File system helpers
-│   ├── tools/            # 17 tool modules (61 tools)
-│   └── __tests__/        # Tests
-├── .mcp-profile.json     # System profile cache (created by delegate_setup)
-├── .ai_reviews/          # Analysis result storage
-├── .ai_context.md        # Project memory
+│   │   ├── ollama.ts      # Ollama API, tool calling, agent
+│   │   ├── gemini.ts      # Gemini CLI wrapper, fallback
+│   │   ├── routing.ts     # Model selection (purpose/complexity/VRAM)
+│   │   ├── profiler.ts    # GPU detection, VRAM calculation, profiling
+│   │   ├── filesystem.ts  # File system helpers
+│   │   ├── vectorstore.ts # Vector store (for RAG)
+│   │   ├── analysis.ts    # Code analysis helpers
+│   │   ├── diff.ts        # Diff generation helpers
+│   │   └── response-validator.ts # Response validation
+│   ├── utils/
+│   │   └── schema-converter.ts   # Zod to JSON Schema converter
+│   ├── tools/             # 17 tool modules (64 tools)
+│   └── __tests__/         # Tests
+├── .mcp-profile.json      # System profile cache (created by delegate_setup)
+├── .ai_reviews/           # Analysis result storage
+├── .ai_context.md         # Project memory
 └── package.json
 ```
 
@@ -361,81 +381,6 @@ npm run start      # Run server
 npm run dev        # Build in watch mode
 npm test           # Run tests
 ```
-
----
-
-## Sharing / Distribution Guide
-
-Setup steps when sharing this MCP server with others.
-
-### Quick Start (3 Steps)
-
-**Step 1: Install**
-
-```bash
-git clone <repository-url>
-cd claude-delegate
-npm install && npm run build
-```
-
-**Step 2: Register MCP in Claude Code**
-
-Register via Claude Code CLI in your project directory:
-
-```bash
-claude mcp add claude-delegate node /absolute/path/to/claude-delegate/dist/index.js
-```
-
-Or manually add to `.claude.json`:
-
-```json
-{
-  "mcpServers": {
-    "claude-delegate": {
-      "command": "node",
-      "args": ["/absolute/path/to/claude-delegate/dist/index.js"]
-    }
-  }
-}
-```
-
-**Step 3: Auto Setup**
-
-Ask Claude:
-
-> "Run the delegate_setup tool"
-
-This single command automatically:
-
-- Detects GPU/VRAM and calculates optimal models
-- Installs Ollama models that fit your VRAM
-- Creates or updates `.claude/settings.json` with permissions (creates if missing)
-- Adds tool usage guide to `CLAUDE.md`
-
-### Prerequisites
-
-| Required | Optional |
-|----------|----------|
-| [Node.js](https://nodejs.org/) v18+ | [Gemini CLI](https://github.com/google/gemini-cli) |
-| [Ollama](https://ollama.com/) running | [GitHub CLI](https://cli.github.com/) |
-
-### Files Excluded from Sharing (.gitignore)
-
-The following files are automatically excluded from git, making it safe to share:
-
-| File | Description |
-|------|-------------|
-| `.mcp-profile.json` | Hardware profile (GPU/VRAM info) |
-| `.ai_reviews/` | Code review results |
-| `.ai_context.md` | Project memory |
-
-### Verification
-
-After setup, verify everything works:
-
-> "Run the health_check tool"
-
-This checks Ollama connectivity, model availability, and Gemini CLI status in one step.
 
 ---
 

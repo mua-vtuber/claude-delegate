@@ -216,7 +216,7 @@ triggers:
 
 ## Quick Reference
 
-This project has a local LLM MCP server (claude-delegate) with 60 tools.
+This project has a local LLM MCP server (claude-delegate) with 64 tools.
 System: ${profile.gpu.name}, ${profile.gpu.vram_total_mb}MB VRAM
 Available models: ${usableTiers || "none (CPU-only mode)"}
 
