@@ -153,3 +153,27 @@ export interface CodeReviewSession {
   last_activity: number;
   log_path?: string;
 }
+
+// ============================================
+// Collaborative Discussion Types (Solution-focused)
+// ============================================
+
+export interface DiscussionMessage {
+  role: "system" | "claude" | "gemini";
+  content: string;
+  timestamp: string;
+}
+
+export interface CodeDiscussionSession {
+  id: string;
+  topic: string;
+  dir_path?: string;
+  source_files: string[];
+  messages: DiscussionMessage[];
+  round: number;
+  max_rounds: number;
+  status: "active" | "completed" | "expired";
+  created_at: number;
+  last_activity: number;
+  log_path?: string;
+}

@@ -12,7 +12,7 @@ import { validateLLMResponse } from "../helpers/response-validator.js";
 import { runGeminiCLI, isGeminiCliAvailable } from "../helpers/gemini.js";
 import { OLLAMA_MODELS } from "../helpers/routing.js";
 import { assertPathSafe } from "../security.js";
-import { reviewSessions } from "../state.js";
+import { reviewSessions, discussionSessions } from "../state.js";
 import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult } from "../types.js";
 
@@ -45,11 +45,25 @@ export const codeReviewDiscussSchema = z.object({
   end: z.boolean().optional().default(false).describe("End the session and save conversation log"),
 });
 
+export const codeDiscussionSchema = z.object({
+  topic: z.string().describe("Discussion topic (e.g., 'How to refactor auth to use JWT?', 'Best approach for caching')"),
+  dir_path: z.string().optional().describe("Optional: directory with code to reference"),
+  max_rounds: z.number().min(1).max(5).optional().default(3).describe("Maximum discussion rounds (1-5, default 3)"),
+});
+
+export const codeDiscussionContinueSchema = z.object({
+  session_id: z.string().describe("Discussion session ID from code_discussion"),
+  message: z.string().optional().describe("Claude's response to Gemini (required unless end=true)"),
+  end: z.boolean().optional().default(false).describe("End the session and save conversation log"),
+});
+
 // ===== Definitions =====
 export const definitions = [
   createToolDefinition("todo_manager", "Manage a TODO.md file. Can list, add, or complete tasks.", todoManagerSchema),
   createToolDefinition("code_review", "Start a collaborative code review session with Gemini. Scans source files, sends to Gemini for initial review, returns review text and session_id. Use code_review_discuss to continue the discussion.", codeReviewSchema),
   createToolDefinition("code_review_discuss", "Continue or end a code review discussion with Gemini. Send follow-up messages, receive Gemini's responses. Full conversation history is maintained. Use end=true to save the conversation log.", codeReviewDiscussSchema),
+  createToolDefinition("code_discussion", "Start a solution-focused discussion with Gemini. Unlike code_review (finds problems), this tool discusses HOW to solve problems: refactoring approaches, implementation strategies, architecture decisions. Returns session_id for continuing.", codeDiscussionSchema),
+  createToolDefinition("code_discussion_continue", "Continue or end a solution discussion with Gemini. Debate implementation approaches, propose alternatives, work toward consensus. Use end=true to save the conversation log.", codeDiscussionContinueSchema),
   createToolDefinition("git_commit_helper", "Generate a commit message based on 'git diff'.", gitCommitHelperSchema),
   createToolDefinition("generate_unit_test", "Generate unit tests for a file.", generateUnitTestSchema),
   createToolDefinition("add_docstrings", "Add docstrings to a file.", addDocstringsSchema),
@@ -60,6 +74,8 @@ export const allSchemas: Record<string, z.ZodType> = {
   todo_manager: todoManagerSchema,
   code_review: codeReviewSchema,
   code_review_discuss: codeReviewDiscussSchema,
+  code_discussion: codeDiscussionSchema,
+  code_discussion_continue: codeDiscussionContinueSchema,
   git_commit_helper: gitCommitHelperSchema,
   generate_unit_test: generateUnitTestSchema,
   add_docstrings: addDocstringsSchema,
@@ -159,6 +175,122 @@ function buildConversationLog(session: {
       log += `## Round ${roundNum + 1} — Claude\n`;
       log += `*${msg.timestamp}*\n\n`;
       log += `${msg.content}\n\n`;
+    }
+  }
+
+  return log;
+}
+
+// ===== Code Discussion Helpers (Solution-focused) =====
+const DISCUSSION_TIMEOUT = 300_000; // 5 minutes
+const MAX_CONCURRENT_DISCUSSIONS = 5;
+
+function buildInitialDiscussionPrompt(topic: string, fileRefs: string, fileCount: number, maxRounds: number): string {
+  const filesContext = fileCount > 0
+    ? `\n\nRelevant code files (${fileCount}):\n${fileRefs}`
+    : "";
+
+  return `You are a senior software architect participating in a collaborative discussion with another architect (Claude). Your goal is to propose and debate SOLUTIONS, not just identify problems.
+
+DISCUSSION TOPIC: ${topic}
+${filesContext}
+
+This is a solution-focused discussion. Please:
+1. Propose a concrete approach to address the topic
+2. Explain the trade-offs of your proposal
+3. Consider alternatives and why you prefer your approach
+4. If code changes are involved, describe the implementation strategy
+5. Be specific about files, patterns, and technologies
+
+This is round 1 of up to ${maxRounds} discussion rounds. Present your initial proposal.`;
+}
+
+function buildDiscussionFollowUpPrompt(
+  topic: string,
+  fileRefs: string,
+  messages: Array<{ role: string; content: string }>,
+  latestMessage: string,
+  round: number,
+  maxRounds: number,
+): string {
+  let history = "";
+  for (const msg of messages) {
+    if (msg.role === "system") continue;
+    const label = msg.role === "gemini" ? "Gemini" : "Claude";
+    history += `[${label}]:\n${msg.content}\n\n`;
+  }
+
+  const filesContext = fileRefs ? `\n\nRelevant code:\n${fileRefs}` : "";
+
+  return `You are continuing a solution-focused discussion with another architect (Claude).
+
+TOPIC: ${topic}
+${filesContext}
+
+=== CONVERSATION HISTORY ===
+${history.trim()}
+=== END HISTORY ===
+
+Claude's latest message:
+${latestMessage}
+
+Respond to Claude's points:
+- If you agree with their approach, explain why and suggest refinements
+- If you disagree, explain your concerns and propose an alternative
+- If you see a better synthesis of both approaches, propose it
+- Focus on actionable solutions, not theoretical debates
+
+This is round ${round} of ${maxRounds}. Work toward a consensus on the best approach.`;
+}
+
+function buildDiscussionLog(session: {
+  id: string;
+  topic: string;
+  dir_path?: string;
+  source_files: string[];
+  messages: Array<{ role: string; content: string; timestamp: string }>;
+  round: number;
+  max_rounds: number;
+  created_at: number;
+}): string {
+  const startTime = new Date(session.created_at).toISOString();
+  const endTime = new Date().toISOString();
+
+  let log = `# Solution Discussion\n\n`;
+  log += `**Session ID:** ${session.id}\n`;
+  log += `**Topic:** ${session.topic}\n`;
+  if (session.dir_path) {
+    log += `**Directory:** ${session.dir_path}\n`;
+  }
+  if (session.source_files.length > 0) {
+    log += `**Files Referenced:** ${session.source_files.length}\n`;
+  }
+  log += `**Rounds:** ${session.round}/${session.max_rounds}\n`;
+  log += `**Started:** ${startTime}\n`;
+  log += `**Ended:** ${endTime}\n\n`;
+  log += `---\n\n`;
+
+  if (session.source_files.length > 0) {
+    log += `## Referenced Files\n\n`;
+    for (const f of session.source_files) {
+      log += `- ${f}\n`;
+    }
+    log += `\n---\n\n`;
+  }
+
+  log += `## Discussion\n\n`;
+  let roundNum = 0;
+  for (const msg of session.messages) {
+    if (msg.role === "system") continue;
+    if (msg.role === "gemini") {
+      roundNum++;
+      log += `### Round ${roundNum} — Gemini\n`;
+      log += `*${msg.timestamp}*\n\n`;
+      log += `${msg.content}\n\n---\n\n`;
+    } else if (msg.role === "claude") {
+      log += `### Round ${roundNum} — Claude\n`;
+      log += `*${msg.timestamp}*\n\n`;
+      log += `${msg.content}\n\n---\n\n`;
     }
   }
 
@@ -414,6 +546,250 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
               ``,
               `---`,
               `Session ended. Conversation log: ${logPath}`,
+            ].join("\n"),
+          }],
+        };
+      }
+
+      // Ongoing discussion
+      const remaining = session.max_rounds - newRound;
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `Session: ${session_id}`,
+            `Round: ${newRound}/${session.max_rounds}`,
+            ``,
+            `--- Gemini's Response ---`,
+            ``,
+            geminiResponse,
+            ``,
+            `---`,
+            `${remaining} round${remaining !== 1 ? "s" : ""} remaining.`,
+          ].join("\n"),
+        }],
+      };
+    }
+
+    case "code_discussion": {
+      const { topic, dir_path, max_rounds } = codeDiscussionSchema.parse(args);
+
+      // Check Gemini availability
+      const geminiCheck = await isGeminiCliAvailable();
+      if (!geminiCheck.available) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "gemini_not_found",
+              message: geminiCheck.message,
+              suggestions: [
+                "Install Gemini CLI: npm install -g @google/gemini-cli",
+                "Run health_check tool to verify installation",
+              ],
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Check concurrent session limit
+      const activeSessions = Array.from(discussionSessions.values()).filter(s => s.status === "active");
+      if (activeSessions.length >= MAX_CONCURRENT_DISCUSSIONS) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "max_sessions_reached",
+              message: `Maximum concurrent discussion sessions (${MAX_CONCURRENT_DISCUSSIONS}) reached. End an existing session first.`,
+              active_sessions: activeSessions.map(s => ({ id: s.id, topic: s.topic, round: s.round })),
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Optionally scan for source files if dir_path provided
+      let sourceFiles: string[] = [];
+      let fileRefs = "";
+      if (dir_path) {
+        const fullPath = assertPathSafe(dir_path, "code_discussion");
+        const allFiles = await getAllFiles(fullPath);
+        sourceFiles = allFiles.filter(f => SOURCE_EXTENSIONS.includes(extname(f)));
+        if (sourceFiles.length > 0) {
+          fileRefs = sourceFiles.map(f => `@${f}`).join(" ");
+        }
+      }
+
+      // Send initial discussion to Gemini
+      const prompt = buildInitialDiscussionPrompt(topic, fileRefs, sourceFiles.length, max_rounds);
+
+      let discussionResponse: string;
+      try {
+        discussionResponse = await runGeminiCLI([prompt], DISCUSSION_TIMEOUT);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "gemini_error",
+              message: `Gemini CLI failed: ${message}`,
+              suggestions: [
+                "Check Gemini authentication: gemini auth login",
+                "Run health_check tool to diagnose",
+              ],
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Create session
+      const sessionId = randomUUID();
+      const now = new Date().toISOString();
+      discussionSessions.set(sessionId, {
+        id: sessionId,
+        topic,
+        dir_path,
+        source_files: sourceFiles,
+        messages: [
+          { role: "system", content: `Discussion topic: ${topic}`, timestamp: now },
+          { role: "gemini", content: discussionResponse, timestamp: now },
+        ],
+        round: 1,
+        max_rounds,
+        status: "active",
+        created_at: Date.now(),
+        last_activity: Date.now(),
+      });
+
+      const filesInfo = sourceFiles.length > 0 ? `Files: ${sourceFiles.length} source files\n` : "";
+
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `Session: ${sessionId}`,
+            `Topic: ${topic}`,
+            `Round: 1/${max_rounds}`,
+            filesInfo,
+            `--- Gemini's Initial Proposal ---`,
+            ``,
+            discussionResponse,
+            ``,
+            `---`,
+            `Use code_discussion_continue(session_id="${sessionId}", message="your response") to continue.`,
+          ].join("\n"),
+        }],
+      };
+    }
+
+    case "code_discussion_continue": {
+      const { session_id, message, end } = codeDiscussionContinueSchema.parse(args);
+
+      const session = discussionSessions.get(session_id);
+      if (!session || session.status !== "active") {
+        const active = Array.from(discussionSessions.values())
+          .filter(s => s.status === "active")
+          .map(s => ({ id: s.id, topic: s.topic, round: s.round }));
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "session_not_found",
+              session_id,
+              message: "Session not found or expired.",
+              active_sessions: active,
+            }, null, 2),
+          }],
+        };
+      }
+
+      // End without message — just save log
+      if (end && !message) {
+        const log = buildDiscussionLog(session);
+        const logPath = await saveReviewToFile(log, "code_discussion");
+        session.status = "completed";
+        session.log_path = logPath;
+        return {
+          content: [{
+            type: "text",
+            text: `Session ended. Rounds: ${session.round}/${session.max_rounds}\nDiscussion log: ${logPath}`,
+          }],
+        };
+      }
+
+      if (!message) {
+        throw new Error("'message' is required when end=false.");
+      }
+
+      // Check round limit
+      if (session.round >= session.max_rounds) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "max_rounds_reached",
+              session_id,
+              rounds_used: session.round,
+              max_rounds: session.max_rounds,
+              message: "Maximum discussion rounds reached. Use end=true to save the discussion log.",
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Build follow-up prompt with full history
+      const fileRefs = session.source_files.length > 0
+        ? session.source_files.map(f => `@${f}`).join(" ")
+        : "";
+      const newRound = session.round + 1;
+      const prompt = buildDiscussionFollowUpPrompt(session.topic, fileRefs, session.messages, message, newRound, session.max_rounds);
+
+      let geminiResponse: string;
+      try {
+        geminiResponse = await runGeminiCLI([prompt], DISCUSSION_TIMEOUT);
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "gemini_error",
+              session_id,
+              round: session.round,
+              message: `Gemini failed: ${errMsg}. Session preserved — retry the same message or end the session.`,
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Update session
+      const now = new Date().toISOString();
+      session.messages.push(
+        { role: "claude", content: message, timestamp: now },
+        { role: "gemini", content: geminiResponse, timestamp: now },
+      );
+      session.round = newRound;
+      session.last_activity = Date.now();
+
+      // End with final message
+      if (end) {
+        const log = buildDiscussionLog(session);
+        const logPath = await saveReviewToFile(log, "code_discussion");
+        session.status = "completed";
+        session.log_path = logPath;
+        return {
+          content: [{
+            type: "text",
+            text: [
+              `Session: ${session_id} — Final round`,
+              `Round: ${newRound}/${session.max_rounds}`,
+              ``,
+              `--- Gemini's Response ---`,
+              ``,
+              geminiResponse,
+              ``,
+              `---`,
+              `Session ended. Discussion log: ${logPath}`,
             ].join("\n"),
           }],
         };

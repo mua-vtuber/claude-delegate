@@ -3,7 +3,8 @@
 import { z } from "zod";
 import { readFile, writeFile } from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
-import { resolve, join } from "path";
+import { resolve, join, dirname } from "path";
+import { homedir } from "os";
 import { ollamaRequest, ollamaPull } from "../helpers/ollama.js";
 import { detectGpu, buildSystemProfile, loadCachedProfile, saveCachedProfile } from "../helpers/profiler.js";
 import { OLLAMA_MODELS } from "../helpers/routing.js";
@@ -20,6 +21,7 @@ export const systemProfileSchema = z.object({
 export const autoSetupSchema = z.object({
   dry_run: z.boolean().optional().default(false).describe("Only report what would be done without making changes (default: false)"),
   skip_pull: z.boolean().optional().default(false).describe("Skip model downloads, only detect and save profile (default: false)"),
+  global: z.boolean().optional().default(false).describe("Install to global ~/.claude/ instead of project-level. Settings, CLAUDE.md section, and skill are written globally so all projects can use the MCP server without per-project setup (default: false)"),
 });
 
 // ===== Definitions =====
@@ -54,8 +56,8 @@ async function runSystemProfile(forceRefresh: boolean): Promise<SystemProfile> {
 
 const MCP_PERMISSION = "mcp__claude-delegate__*";
 
-async function ensureSettingsPermission(): Promise<{ action: string }> {
-  const claudeDir = resolve(join(PROJECT_ROOT, ".claude"));
+async function ensureSettingsPermission(targetRoot: string): Promise<{ action: string }> {
+  const claudeDir = resolve(join(targetRoot, ".claude"));
   const settingsPath = resolve(join(claudeDir, "settings.json"));
 
   if (!existsSync(settingsPath)) {
@@ -106,8 +108,8 @@ const CLAUDE_MD_SECTION_MARKER = "<!-- LOCAL_LLM_MCP_SECTION -->";
 const SKILL_VERSION = "1.2.0";
 const SKILL_VERSION_MARKER = `<!-- CLAUDE-DELEGATE-SKILL v${SKILL_VERSION} -->`;
 
-async function ensureClaudeMdSection(profile: SystemProfile): Promise<{ action: string }> {
-  const claudeMdPath = resolve(join(PROJECT_ROOT, "CLAUDE.md"));
+async function ensureClaudeMdSection(profile: SystemProfile, targetRoot: string): Promise<{ action: string }> {
+  const claudeMdPath = resolve(join(targetRoot, "CLAUDE.md"));
 
   try {
     let content = "";
@@ -154,8 +156,8 @@ These tools are FREE (local Ollama) — prefer them over Claude token-consuming 
   }
 }
 
-async function ensureSkillInstallation(profile: SystemProfile): Promise<{ action: string }> {
-  const skillDir = resolve(join(PROJECT_ROOT, ".claude", "skills", "claude-delegate-guide"));
+async function ensureSkillInstallation(profile: SystemProfile, targetRoot: string): Promise<{ action: string }> {
+  const skillDir = resolve(join(targetRoot, ".claude", "skills", "claude-delegate-guide"));
   const skillPath = resolve(join(skillDir, "SKILL.md"));
 
   // Check existing skill and version before making any changes
@@ -351,6 +353,67 @@ health_check()         // Diagnose issues
   }
 }
 
+async function ensureMcpServerRegistration(): Promise<{ action: string }> {
+  const claudeJsonPath = resolve(join(homedir(), ".claude.json"));
+
+  try {
+    let data: any = {};
+
+    // Read existing config if it exists
+    if (existsSync(claudeJsonPath)) {
+      const content = await readFile(claudeJsonPath, "utf-8");
+      data = JSON.parse(content);
+    }
+
+    // Ensure mcpServers object exists
+    if (!data.mcpServers) {
+      data.mcpServers = {};
+    }
+
+    // Build the correct config
+    const correctConfig = {
+      command: process.execPath,  // Full path to node.exe
+      args: [resolve(join(PROJECT_ROOT, "dist", "index.js"))],
+      env: {
+        OLLAMA_HOST: "http://localhost:11434",
+        PATH: `${dirname(process.execPath)};${join(homedir(), "AppData", "Roaming", "npm")};$\{PATH}`
+      }
+    };
+
+    // Check if global entry already exists and is correct
+    const existingGlobal = data.mcpServers["claude-delegate"];
+    if (existingGlobal &&
+        existingGlobal.command === correctConfig.command &&
+        existingGlobal.args?.[0] === correctConfig.args[0]) {
+      return { action: "already_configured" };
+    }
+
+    // Update global entry
+    const wasUpdate = !!existingGlobal;
+    data.mcpServers["claude-delegate"] = correctConfig;
+
+    // Also check project-level entries and fix them if they use "node" instead of full path
+    if (data.projects) {
+      for (const projectPath of Object.keys(data.projects)) {
+        const project = data.projects[projectPath];
+        if (project?.mcpServers?.["claude-delegate"]) {
+          const projectEntry = project.mcpServers["claude-delegate"];
+          if (projectEntry.command === "node" || projectEntry.command !== correctConfig.command) {
+            project.mcpServers["claude-delegate"] = correctConfig;
+          }
+        }
+      }
+    }
+
+    // Write back
+    await writeFile(claudeJsonPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+    return { action: wasUpdate ? "updated" : "configured" };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { action: `error: ${message}` };
+  }
+}
+
 interface DependencyResult {
   installed: boolean;
   action: string;
@@ -496,7 +559,7 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       };
     }
     case "delegate_setup": {
-      const { dry_run, skip_pull } = autoSetupSchema.parse(args);
+      const { dry_run, skip_pull, global: useGlobal } = autoSetupSchema.parse(args);
 
       // Step 1: Profile the system
       const profile = await runSystemProfile(true);
@@ -554,18 +617,26 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       const geminiResult = await checkAndInstallGeminiCli(dry_run);
       const githubResult = await checkAndInstallGithubCli(dry_run);
 
-      // Step 5: Configure settings.json and CLAUDE.md
-      const settingsResult = dry_run
+      // Step 5: Register MCP server in ~/.claude.json
+      const mcpRegResult = dry_run
         ? { action: "would_configure" }
-        : await ensureSettingsPermission();
+        : await ensureMcpServerRegistration();
+
+      // Step 6: Configure settings.json, CLAUDE.md, and skill
+      const targetRoot = useGlobal ? homedir() : PROJECT_ROOT;
+      const scopeLabel = useGlobal ? "global (~/.claude/)" : "project";
+
+      const settingsResult = dry_run
+        ? { action: `would_configure (${scopeLabel})` }
+        : await ensureSettingsPermission(targetRoot);
 
       const claudeMdResult = dry_run
-        ? { action: "would_configure" }
-        : await ensureClaudeMdSection(profile);
+        ? { action: `would_configure (${scopeLabel})` }
+        : await ensureClaudeMdSection(profile, targetRoot);
 
       const skillResult = dry_run
-        ? { action: "would_configure" }
-        : await ensureSkillInstallation(profile);
+        ? { action: `would_configure (${scopeLabel})` }
+        : await ensureSkillInstallation(profile, targetRoot);
 
       const isCpuOnly = profile.gpu.detected_via === "none";
       const result = {
@@ -579,6 +650,9 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
           github_cli: githubResult,
         },
         configuration: {
+          scope: scopeLabel,
+          target_root: targetRoot,
+          mcp_server_registration: mcpRegResult.action,
           settings_json: settingsResult.action,
           claude_md: claudeMdResult.action,
           skill_guide: skillResult.action,

@@ -2,7 +2,7 @@
 // State Storage & Cleanup
 // ============================================
 
-import type { ThinkingStep, GraphNode, GraphRelation, AnalysisResult, SystemProfile, CodeReviewSession } from "./types.js";
+import type { ThinkingStep, GraphNode, GraphRelation, AnalysisResult, SystemProfile, CodeReviewSession, CodeDiscussionSession } from "./types.js";
 
 export const thinkingSteps: Map<string, ThinkingStep[]> = new Map();
 export const knowledgeGraph: { nodes: GraphNode[]; relations: GraphRelation[] } = { nodes: [], relations: [] };
@@ -18,6 +18,9 @@ export const analysisCache: Map<string, { result: AnalysisResult; timestamp: num
 
 // Code review collaborative session storage
 export const reviewSessions: Map<string, CodeReviewSession> = new Map();
+
+// Code discussion session storage (solution-focused)
+export const discussionSessions: Map<string, CodeDiscussionSession> = new Map();
 
 // System profile cache for VRAM-aware routing
 export let cachedSystemProfile: SystemProfile | null = null;
@@ -35,6 +38,8 @@ const MAX_THINKING_SESSIONS = 100;
 const CACHE_CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutes
 const MAX_REVIEW_SESSIONS = 5;
 const REVIEW_SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
+const MAX_DISCUSSION_SESSIONS = 5;
+const DISCUSSION_SESSION_EXPIRY_MS = 30 * 60 * 1000; // 30 minutes
 
 function cleanupExpiredCache() {
   const now = Date.now();
@@ -95,6 +100,24 @@ function cleanupReviewSessions() {
   }
 }
 
+function cleanupDiscussionSessions() {
+  const now = Date.now();
+  for (const [id, session] of discussionSessions.entries()) {
+    if (now - session.last_activity > DISCUSSION_SESSION_EXPIRY_MS) {
+      discussionSessions.delete(id);
+    }
+    if (session.status === "completed") {
+      discussionSessions.delete(id);
+    }
+  }
+  if (discussionSessions.size > MAX_DISCUSSION_SESSIONS) {
+    const entries = Array.from(discussionSessions.entries())
+      .sort((a, b) => a[1].last_activity - b[1].last_activity);
+    const toDelete = entries.slice(0, discussionSessions.size - MAX_DISCUSSION_SESSIONS);
+    toDelete.forEach(([key]) => discussionSessions.delete(key));
+  }
+}
+
 // Store timer reference for graceful shutdown
 let cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -104,6 +127,7 @@ export function startCleanupTimers(): void {
     cleanupThinkingSessions();
     cleanupBackgroundProcesses();
     cleanupReviewSessions();
+    cleanupDiscussionSessions();
   }, CACHE_CLEANUP_INTERVAL);
 }
 
