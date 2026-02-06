@@ -102,6 +102,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const handle = dispatchMap.get(name);
     if (!handle) throw new Error(`Unknown tool: ${name}`);
     const result = await handle(name, validated.data);
+    // Safety net: prevent extremely large responses from consuming too many tokens
+    const MAX_RESPONSE_CHARS = 200_000;
+    for (const block of result.content) {
+      if ("text" in block && typeof block.text === "string" && block.text.length > MAX_RESPONSE_CHARS) {
+        const originalLen = block.text.length;
+        const lines = block.text.split("\n");
+        let truncated = "";
+        for (const line of lines) {
+          if (truncated.length + line.length + 1 > MAX_RESPONSE_CHARS) break;
+          truncated += (truncated ? "\n" : "") + line;
+        }
+        block.text = truncated + `\n\n[SAFETY TRUNCATED: ${originalLen.toLocaleString()} chars → ${truncated.length.toLocaleString()} chars. Use pagination parameters for full content.]`;
+      }
+    }
     logToolCall(name, Date.now() - start, !!result.isError);
     return result;
   } catch (error) {

@@ -16,6 +16,7 @@ export const shellExecuteSchema = z.object({
   args: z.array(z.string()).optional().describe("Command arguments"),
   cwd: z.string().optional().describe("Working directory"),
   timeout: z.number().optional().describe("Timeout in milliseconds"),
+  max_lines: z.number().optional().describe("Maximum stdout lines to return (default: 500, keeps last N lines if exceeded)"),
 });
 
 export const envGetSchema = z.object({
@@ -61,12 +62,19 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
       const options: any = { timeout };
       if (cwd) options.cwd = resolve(cwd);
 
+      const maxLines = validated.max_lines ?? 500;
+      const truncateOutput = (text: string): string => {
+        const lines = text.split("\n");
+        if (lines.length <= maxLines) return text;
+        return `[truncated: showing last ${maxLines} of ${lines.length} lines]\n` + lines.slice(-maxLines).join("\n");
+      };
+
       try {
         const { stdout, stderr } = await execFilePromise(command, cmdArgs, options);
-        return { content: [{ type: "text", text: JSON.stringify({ stdout, stderr, exitCode: 0 }, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ stdout: truncateOutput(String(stdout)), stderr: String(stderr), exitCode: 0 }, null, 2) }] };
       } catch (err: unknown) {
         const execErr = err as { message?: string; stderr?: string; stdout?: string; code?: number | string };
-        return { content: [{ type: "text", text: JSON.stringify({ stdout: execErr.stdout || "", stderr: execErr.stderr || execErr.message || "", exitCode: execErr.code || 1 }, null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ stdout: truncateOutput(execErr.stdout || ""), stderr: execErr.stderr || execErr.message || "", exitCode: execErr.code || 1 }, null, 2) }] };
       }
     }
     case "env_get": {

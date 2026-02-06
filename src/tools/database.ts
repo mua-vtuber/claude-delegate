@@ -11,6 +11,8 @@ import type { CallToolResult } from "../types.js";
 export const sqliteQuerySchema = z.object({
   db_path: z.string().describe("Path to .sqlite or .db file"),
   query: z.string().describe("SQL query to execute (SELECT only recommended)"),
+  limit: z.number().optional().default(100).describe("Maximum rows to return (default: 100)"),
+  offset: z.number().optional().default(0).describe("Row offset for pagination (default: 0)"),
 });
 
 // ===== Definitions =====
@@ -27,7 +29,7 @@ export const allSchemas: Record<string, z.ZodType> = {
 export async function handler(name: string, args: Record<string, unknown>): Promise<CallToolResult> {
   switch (name) {
     case "sqlite_query": {
-      const { db_path, query } = sqliteQuerySchema.parse(args);
+      const { db_path, query, limit, offset } = sqliteQuerySchema.parse(args);
       const fullPath = assertPathSafe(db_path, "sqlite_query");
       if (!existsSync(fullPath)) throw new Error(`DB file not found: ${fullPath}`);
 
@@ -52,7 +54,22 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
         }
       }
 
-      const { stdout } = await execFilePromise("sqlite3", ["-json", fullPath, query]);
+      // Auto-inject LIMIT/OFFSET if not already present
+      let finalQuery = query.trim();
+      if (!upperQuery.includes("LIMIT")) {
+        finalQuery += ` LIMIT ${limit} OFFSET ${offset}`;
+      }
+
+      const { stdout } = await execFilePromise("sqlite3", ["-json", fullPath, finalQuery]);
+
+      if (!upperQuery.includes("LIMIT")) {
+        const rows: unknown[] = stdout ? JSON.parse(stdout) : [];
+        const hasMore = rows.length >= limit;
+        const meta = hasMore
+          ? `[${rows.length} rows from offset ${offset} — more rows may exist, increase offset to paginate]`
+          : `[${rows.length} rows total]`;
+        return { content: [{ type: "text", text: meta + "\n" + (stdout || "[]") }] };
+      }
       return { content: [{ type: "text", text: stdout || "[]" }] };
     }
     default:
