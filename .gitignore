@@ -142,20 +142,10 @@ secret-*.*
 .aws/credentials
 
 # ===========================================
-# Claude Code Configuration
+# Claude Code Configuration (user-specific)
 # ===========================================
-.claude/settings.local.json
-.claude/settings.local.*.json
-.claude/.env.local*
-.claude/local/
-.claude/plans/
-
-# Skill-specific credentials
-.claude/skills/*/.env*
-.claude/skills/*/secrets/
-.claude/skills/*/*/*secret*
-.claude/skills/*/*/*key*
-.claude/skills/*/*/*token*
+.claude/
+CLAUDE.md
 
 # ===========================================
 # Node.js (for docs/Nextra)
