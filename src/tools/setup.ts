@@ -2,7 +2,7 @@
 
 import { z } from "zod";
 import { readFile, writeFile } from "fs/promises";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, copyFileSync } from "fs";
 import { resolve, join, dirname } from "path";
 import { homedir } from "os";
 import { ollamaRequest, ollamaPull } from "../helpers/ollama.js";
@@ -12,6 +12,16 @@ import { PROJECT_ROOT, execFilePromise } from "../config.js";
 import { createToolDefinition } from "../utils/schema-converter.js";
 import type { CallToolResult, SystemProfile } from "../types.js";
 import { findGeminiCliPath } from "../helpers/gemini.js";
+
+// ===== Helpers =====
+
+function backupFile(filePath: string): void {
+  try {
+    copyFileSync(filePath, filePath + ".delegate-backup");
+  } catch {
+    // Non-critical: silently ignore backup failures
+  }
+}
 
 // ===== Schemas =====
 export const systemProfileSchema = z.object({
@@ -95,6 +105,7 @@ async function ensureSettingsPermission(targetRoot: string): Promise<{ action: s
     if (!settings.permissions.allow) settings.permissions.allow = [];
     settings.permissions.allow.push(MCP_PERMISSION);
 
+    backupFile(settingsPath);
     await writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
     return { action: "added" };
   } catch (err: unknown) {
@@ -104,12 +115,14 @@ async function ensureSettingsPermission(targetRoot: string): Promise<{ action: s
 }
 
 const CLAUDE_MD_SECTION_MARKER = "<!-- LOCAL_LLM_MCP_SECTION -->";
+const CLAUDE_MD_SECTION_END = "<!-- /LOCAL_LLM_MCP_SECTION -->";
 
-const SKILL_VERSION = "1.2.0";
+const SKILL_VERSION = "3.2.0";
 const SKILL_VERSION_MARKER = `<!-- CLAUDE-DELEGATE-SKILL v${SKILL_VERSION} -->`;
 
 async function ensureClaudeMdSection(profile: SystemProfile, targetRoot: string): Promise<{ action: string }> {
   const claudeMdPath = resolve(join(targetRoot, "CLAUDE.md"));
+  const versionTag = `<!-- CLAUDE-DELEGATE-MD v${SKILL_VERSION} -->`;
 
   try {
     let content = "";
@@ -117,18 +130,19 @@ async function ensureClaudeMdSection(profile: SystemProfile, targetRoot: string)
       content = await readFile(claudeMdPath, "utf-8");
     }
 
-    if (content.includes(CLAUDE_MD_SECTION_MARKER)) {
+    // Already up to date
+    if (content.includes(versionTag)) {
       return { action: "already_configured" };
     }
 
-    // Build the section with actual profile data
+    // Build the new section
     const usableTiers = (["light", "fast", "powerful"] as const)
       .filter((t) => profile.models[t].fits_vram)
       .map((t) => `${t} (${profile.models[t].model_name})`)
       .join(", ");
 
-    const section = `
-${CLAUDE_MD_SECTION_MARKER}
+    const newSection = `${CLAUDE_MD_SECTION_MARKER}
+${versionTag}
 ## Local LLM MCP Tools (auto-configured)
 
 This project has a local LLM MCP server (claude-delegate). Use these tools DIRECTLY instead of delegating to agents:
@@ -145,9 +159,40 @@ System: ${profile.gpu.name}, ${profile.gpu.vram_total_mb}MB VRAM
 Available models: ${usableTiers}
 
 These tools are FREE (local Ollama) — prefer them over Claude token-consuming alternatives.
-`;
+${CLAUDE_MD_SECTION_END}`;
 
-    const updatedContent = content.trimEnd() + "\n" + section.trim() + "\n";
+    // Check if old section exists (any version) — replace it
+    const hasOldSection = content.includes(CLAUDE_MD_SECTION_MARKER);
+
+    if (hasOldSection) {
+      backupFile(claudeMdPath);
+
+      const startIdx = content.indexOf(CLAUDE_MD_SECTION_MARKER);
+      const endMarkerIdx = content.indexOf(CLAUDE_MD_SECTION_END, startIdx);
+
+      // End marker present (new format) or take to EOF (old format without end marker)
+      const endIdx = endMarkerIdx !== -1
+        ? endMarkerIdx + CLAUDE_MD_SECTION_END.length
+        : content.length;
+
+      // Trim trailing newlines before our section
+      let trimStart = startIdx;
+      while (trimStart > 0 && content[trimStart - 1] === "\n") trimStart--;
+      if (trimStart > 0) trimStart++;
+
+      const before = content.slice(0, trimStart);
+      const after = content.slice(endIdx);
+
+      content = before.trimEnd() + "\n\n" + newSection + "\n" + after.trimStart();
+      await writeFile(claudeMdPath, content, "utf-8");
+      return { action: "updated" };
+    }
+
+    // No existing section — append
+    if (existsSync(claudeMdPath)) {
+      backupFile(claudeMdPath);
+    }
+    const updatedContent = content.trimEnd() + "\n\n" + newSection + "\n";
     await writeFile(claudeMdPath, updatedContent, "utf-8");
     return { action: "added" };
   } catch (err: unknown) {
@@ -359,53 +404,42 @@ async function ensureMcpServerRegistration(): Promise<{ action: string }> {
   try {
     let data: any = {};
 
-    // Read existing config if it exists
     if (existsSync(claudeJsonPath)) {
       const content = await readFile(claudeJsonPath, "utf-8");
       data = JSON.parse(content);
     }
 
-    // Ensure mcpServers object exists
     if (!data.mcpServers) {
       data.mcpServers = {};
     }
 
-    // Build the correct config
-    const correctConfig = {
-      command: process.execPath,  // Full path to node.exe
-      args: [resolve(join(PROJECT_ROOT, "dist", "index.js"))],
+    const distPath = resolve(join(PROJECT_ROOT, "dist", "index.js"));
+
+    // Simple, portable config — "node" resolves via PATH on any platform
+    const correctConfig: Record<string, unknown> = {
+      command: "node",
+      args: [distPath],
       env: {
-        OLLAMA_HOST: "http://localhost:11434",
-        PATH: `${dirname(process.execPath)};${join(homedir(), "AppData", "Roaming", "npm")};$\{PATH}`
-      }
+        OLLAMA_HOST: process.env.OLLAMA_HOST || "http://localhost:11434",
+      },
     };
 
-    // Check if global entry already exists and is correct
-    const existingGlobal = data.mcpServers["claude-delegate"];
-    if (existingGlobal &&
-        existingGlobal.command === correctConfig.command &&
-        existingGlobal.args?.[0] === correctConfig.args[0]) {
+    // Check if already configured with same entry point
+    const existing = data.mcpServers["claude-delegate"];
+    if (existing && existing.args?.[0] === distPath) {
       return { action: "already_configured" };
     }
 
-    // Update global entry
-    const wasUpdate = !!existingGlobal;
-    data.mcpServers["claude-delegate"] = correctConfig;
-
-    // Also check project-level entries and fix them if they use "node" instead of full path
-    if (data.projects) {
-      for (const projectPath of Object.keys(data.projects)) {
-        const project = data.projects[projectPath];
-        if (project?.mcpServers?.["claude-delegate"]) {
-          const projectEntry = project.mcpServers["claude-delegate"];
-          if (projectEntry.command === "node" || projectEntry.command !== correctConfig.command) {
-            project.mcpServers["claude-delegate"] = correctConfig;
-          }
-        }
-      }
+    // Backup before modifying
+    if (existsSync(claudeJsonPath)) {
+      backupFile(claudeJsonPath);
     }
 
-    // Write back
+    const wasUpdate = !!existing;
+    data.mcpServers["claude-delegate"] = correctConfig;
+
+    // Do NOT modify project-level entries — users may have custom per-project configs
+
     await writeFile(claudeJsonPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
     return { action: wasUpdate ? "updated" : "configured" };
   } catch (err: unknown) {
