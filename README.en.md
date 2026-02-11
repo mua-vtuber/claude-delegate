@@ -4,7 +4,7 @@ English | [한국어](README.md)
 
 A **local LLM (Ollama)** + **cloud LLM (Gemini CLI)** integration MCP server for Claude Code.
 
-Provides **64 tools** for file manipulation, code analysis, web research, database inspection, and workflow automation.
+Provides **68 tools** for file manipulation, code analysis, web research, database inspection, and workflow automation.
 
 ## Key Features
 
@@ -24,6 +24,10 @@ Provides **64 tools** for file manipulation, code analysis, web research, databa
 - [Ollama](https://ollama.com/) running locally
 - [Google Gemini CLI](https://github.com/google/gemini-cli) (optional)
 - [GitHub CLI](https://cli.github.com/) (optional, for GitHub tools)
+
+> **WSL Users**: If you run Claude Code in WSL, **Gemini CLI must also be installed inside WSL** (`npm install -g @google/gemini-cli` in WSL terminal). Gemini CLI is spawned as a child process, so it must share the same filesystem and encoding (UTF-8) as the MCP server. A Windows-only installation will cause path resolution failures with `@file` references and potential encoding issues.
+>
+> Ollama does **not** need to be in WSL — it communicates via HTTP (`localhost:11434`), so the Windows desktop version works fine from WSL.
 
 ### Install and Build
 
@@ -97,7 +101,7 @@ This command automatically performs:
 
 ---
 
-## Tool List (64 tools)
+## Tool List (68 tools)
 
 ### Tool Categories
 
@@ -106,7 +110,7 @@ This command automatically performs:
 | **Ollama / Gemini LLM** | 12 | Chat, file analysis, agent, embeddings, model comparison |
 | **LLM Utilities** | 9 | Translation, summarization, code explanation, templates |
 | **File System** | 4 | Read, write, list, search |
-| **Productivity** | 6 | Code review, commit messages, tests, docstrings, TODO |
+| **Productivity** | 10 | Code review, adversarial review, discussions, commit messages, tests, docstrings, TODO |
 | **Code Analysis** | 4 | Type checking, linting, dependency analysis, unused exports |
 | **Knowledge Graph** | 5 | Node/relation management, queries, save/load |
 | **Shell / Environment** | 4 | Execute commands, environment variables, .env parsing |
@@ -161,12 +165,16 @@ This command automatically performs:
 | `fs_list_directory` | List directory |
 | `fs_search_files` | Search file content (regex) |
 
-### Productivity (6)
+### Productivity (10)
 
 | Tool | Description |
 |------|-------------|
 | `code_review` | Start Claude+Gemini collaborative code review session |
 | `code_review_discuss` | Continue or end code review discussion |
+| `code_discussion` | Start a solution-focused discussion with Gemini |
+| `code_discussion_continue` | Continue or end a solution discussion |
+| `cross_review` | Adversarial parallel review: both AIs review against same rules |
+| `validate_changes` | Post-modification validator: Gemini checks changes against rules |
 | `git_commit_helper` | Generate commit message from git diff |
 | `generate_unit_test` | Auto-generate unit tests |
 | `add_docstrings` | Auto-add docstrings |
@@ -266,7 +274,7 @@ Each tool knows its purpose and automatically selects the optimal model:
 | Purpose | Model | Examples |
 |---------|-------|----------|
 | Translation | 7B (Light) | `translate_file`, `translate_text` |
-| Code Review | Gemini CLI | `code_review` + `code_review_discuss` |
+| Code Review | Gemini CLI (Ollama fallback) | `code_review`, `cross_review`, `validate_changes` |
 | Agent | 14B (Fast) | `ollama_agent` |
 | Analysis/General | Complexity-based auto | `smart_ask`, `ollama_chat` |
 

@@ -5,11 +5,11 @@ import { randomUUID } from "crypto";
 import { readFile, writeFile } from "fs/promises";
 import { existsSync } from "fs";
 import { extname } from "path";
-import { execFilePromise } from "../config.js";
+import { execFilePromise, MAX_INPUT_CHARS } from "../config.js";
 import { getAllFiles, saveReviewToFile } from "../helpers/filesystem.js";
 import { ollamaChat, DEFENSE_SYSTEM_PROMPT, encapsulateFileContent } from "../helpers/ollama.js";
 import { validateLLMResponse } from "../helpers/response-validator.js";
-import { runGeminiCLI, isGeminiCliAvailable } from "../helpers/gemini.js";
+import { runGeminiCLI, isGeminiCliAvailable, runGeminiWithFallback } from "../helpers/gemini.js";
 import { OLLAMA_MODELS } from "../helpers/routing.js";
 import { assertPathSafe } from "../security.js";
 import { reviewSessions, discussionSessions } from "../state.js";
@@ -57,6 +57,20 @@ export const codeDiscussionContinueSchema = z.object({
   end: z.boolean().optional().default(false).describe("End the session and save conversation log"),
 });
 
+export const crossReviewSchema = z.object({
+  file_paths: z.array(z.string()).optional().describe("Specific files to review. Provide either file_paths or dir_path."),
+  dir_path: z.string().optional().describe("Directory to scan for source files (used when file_paths not provided)"),
+  rules: z.array(z.string()).min(1).describe("Review rules both AIs must enforce (e.g., ['No hardcoding', 'DRY principle', 'All errors must be handled'])"),
+  focus: z.string().optional().default("general").describe("Review focus area (e.g., 'security', 'performance')"),
+});
+
+export const validateChangesSchema = z.object({
+  file_paths: z.array(z.string()).min(1).describe("Paths to modified files to validate"),
+  rules: z.array(z.string()).min(1).describe("Rules the changes must comply with"),
+  changes_description: z.string().describe("What was changed and why"),
+  diff: z.string().optional().describe("Optional unified diff text for focused validation"),
+});
+
 // ===== Definitions =====
 export const definitions = [
   createToolDefinition("todo_manager", "Manage a TODO.md file. Can list, add, or complete tasks.", todoManagerSchema),
@@ -64,6 +78,8 @@ export const definitions = [
   createToolDefinition("code_review_discuss", "Continue or end a code review discussion with Gemini. Send follow-up messages, receive Gemini's responses. Full conversation history is maintained. Use end=true to save the conversation log.", codeReviewDiscussSchema),
   createToolDefinition("code_discussion", "Start a solution-focused discussion with Gemini. Unlike code_review (finds problems), this tool discusses HOW to solve problems: refactoring approaches, implementation strategies, architecture decisions. Returns session_id for continuing.", codeDiscussionSchema),
   createToolDefinition("code_discussion_continue", "Continue or end a solution discussion with Gemini. Debate implementation approaches, propose alternatives, work toward consensus. Use end=true to save the conversation log.", codeDiscussionContinueSchema),
+  createToolDefinition("cross_review", "Adversarial parallel review: Gemini independently reviews code against the SAME rules Claude uses. Returns Gemini's rule-based findings for Claude to compare against its own review. Use when both AIs should check code with shared guidelines.", crossReviewSchema),
+  createToolDefinition("validate_changes", "Post-modification validator: After Claude modifies code, Gemini validates the changes against specified rules. Returns PASS/FAIL verdict with specific rule violations. Use after code changes to ensure rule compliance.", validateChangesSchema),
   createToolDefinition("git_commit_helper", "Generate a commit message based on 'git diff'.", gitCommitHelperSchema),
   createToolDefinition("generate_unit_test", "Generate unit tests for a file.", generateUnitTestSchema),
   createToolDefinition("add_docstrings", "Add docstrings to a file.", addDocstringsSchema),
@@ -76,6 +92,8 @@ export const allSchemas: Record<string, z.ZodType> = {
   code_review_discuss: codeReviewDiscussSchema,
   code_discussion: codeDiscussionSchema,
   code_discussion_continue: codeDiscussionContinueSchema,
+  cross_review: crossReviewSchema,
+  validate_changes: validateChangesSchema,
   git_commit_helper: gitCommitHelperSchema,
   generate_unit_test: generateUnitTestSchema,
   add_docstrings: addDocstringsSchema,
@@ -295,6 +313,118 @@ function buildDiscussionLog(session: {
   }
 
   return log;
+}
+
+// ===== Cross Review & Validation Helpers =====
+
+function buildCrossReviewPrompt(fileRefs: string, rules: string[], focus: string, fileCount: number): string {
+  const rulesBlock = rules.map((rule, i) => `  ${i + 1}. ${rule}`).join("\n");
+
+  return `${fileRefs}
+
+You are a strict code reviewer. Another reviewer (Claude) is reviewing the same code with the same rules. Your job is to provide an INDEPENDENT review.
+
+============================
+MANDATORY REVIEW RULES
+============================
+${rulesBlock}
+============================
+
+Review Focus: ${focus}
+Files: ${fileCount} source file(s)
+
+Instructions:
+1. For EACH rule above, scan ALL files and report:
+   - PASS: if the code complies (briefly explain why)
+   - FAIL: if the code violates (cite specific file, line/section, and the violation)
+2. After rule-by-rule analysis, provide a general code quality assessment:
+   - Bugs or logical errors
+   - Security concerns
+   - Performance issues
+   - Readability/maintainability
+3. End with a summary:
+
+## Rule Compliance
+
+### Rule 1: [rule text]
+**Status**: PASS | FAIL
+**Details**: ...
+**Location**: file:line (if FAIL)
+
+(repeat for each rule)
+
+## General Code Quality
+(additional findings beyond the rules)
+
+## Summary
+- Rules: X/${rules.length} passed
+- Verdict: PASS (all rules met) | FAIL (any rule violated)
+- Critical issues: (count)`;
+}
+
+function buildValidateChangesPrompt(
+  fileRefs: string,
+  rules: string[],
+  changesDescription: string,
+  diff: string | undefined,
+  fileCount: number,
+): string {
+  const rulesBlock = rules.map((rule, i) => `  ${i + 1}. ${rule}`).join("\n");
+
+  const diffSection = diff
+    ? `
+============================
+CHANGES DIFF
+============================
+${diff}
+============================
+`
+    : "";
+
+  return `${fileRefs}
+
+You are a change validator. Another developer (Claude) modified code and you must verify the changes comply with ALL rules.
+
+============================
+WHAT WAS CHANGED
+============================
+${changesDescription}
+============================
+${diffSection}
+============================
+MANDATORY COMPLIANCE RULES
+============================
+${rulesBlock}
+============================
+
+Files modified: ${fileCount}
+
+Instructions:
+1. Read the modified files carefully.
+2. If a diff is provided, focus on the CHANGED portions but also verify surrounding context.
+3. For EACH rule, determine if the modifications comply:
+   - PASS: The changes respect this rule
+   - FAIL: The changes violate this rule (cite specific location and violation)
+4. Check for regressions: did the changes introduce new bugs or break existing patterns?
+5. Provide a final verdict.
+
+## Validation Result
+
+### Rule 1: [rule text]
+**Status**: PASS | FAIL
+**Details**: ...
+
+(repeat for each rule)
+
+## Regression Check
+- New bugs introduced: yes/no (details)
+- Broken patterns: yes/no (details)
+- Code quality impact: improved/unchanged/degraded
+
+## Verdict
+**RESULT**: PASS | FAIL
+**Violations**: (list if FAIL, or "None" if PASS)
+**Suggestions**: (optional improvements)`;
 }
 
 // ===== Handler =====
@@ -810,6 +940,228 @@ export async function handler(name: string, args: Record<string, unknown>): Prom
             ``,
             `---`,
             `${remaining} round${remaining !== 1 ? "s" : ""} remaining.`,
+          ].join("\n"),
+        }],
+      };
+    }
+
+    case "cross_review": {
+      const { file_paths, dir_path, rules, focus } = crossReviewSchema.parse(args);
+
+      // Validate: at least one of file_paths or dir_path required
+      if ((!file_paths || file_paths.length === 0) && !dir_path) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "invalid_input",
+              message: "Either file_paths or dir_path must be provided.",
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Resolve target files
+      let sourceFiles: string[];
+      if (file_paths && file_paths.length > 0) {
+        sourceFiles = file_paths.map(fp => assertPathSafe(fp, "cross_review"));
+        const missing = sourceFiles.filter(f => !existsSync(f));
+        if (missing.length > 0) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({
+                status: "files_not_found",
+                missing_files: missing,
+                message: `${missing.length} file(s) not found.`,
+              }, null, 2),
+            }],
+          };
+        }
+      } else {
+        const fullPath = assertPathSafe(dir_path!, "cross_review");
+        const allFiles = await getAllFiles(fullPath);
+        sourceFiles = allFiles.filter(f => SOURCE_EXTENSIONS.includes(extname(f)));
+        if (sourceFiles.length === 0) {
+          return { content: [{ type: "text", text: "No source files found in directory." }] };
+        }
+      }
+
+      // Build prompt and call Gemini
+      const fileRefs = sourceFiles.map(f => `@${f}`).join(" ");
+      const prompt = buildCrossReviewPrompt(fileRefs, rules, focus!, sourceFiles.length);
+
+      let reviewResponse: string;
+      let source: "gemini" | "ollama";
+      try {
+        const result = await runGeminiWithFallback(prompt, CODE_REVIEW_TIMEOUT);
+        reviewResponse = result.response;
+        source = result.source;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "review_error",
+              message: `Cross review failed: ${message}`,
+              suggestions: [
+                "Check Gemini authentication: gemini auth login",
+                "Ensure Ollama is running for fallback",
+                "Run health_check tool to diagnose",
+              ],
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Save to .ai_reviews/
+      const rulesForLog = rules.map((r, i) => `${i + 1}. ${r}`).join("\n");
+      const logContent = [
+        `# Cross Review`,
+        ``,
+        `**Date:** ${new Date().toISOString()}`,
+        `**Focus:** ${focus}`,
+        `**Source:** ${source}`,
+        `**Files:** ${sourceFiles.length}`,
+        ``,
+        `## Rules`,
+        rulesForLog,
+        ``,
+        `## Files Reviewed`,
+        ...sourceFiles.map(f => `- ${f}`),
+        ``,
+        `## Gemini Review`,
+        ``,
+        reviewResponse,
+      ].join("\n");
+      const logPath = await saveReviewToFile(logContent, "cross_review");
+
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `Cross Review Complete`,
+            `Files: ${sourceFiles.length} | Rules: ${rules.length} | Focus: ${focus}`,
+            `Source: ${source} | Log: ${logPath}`,
+            ``,
+            `--- Gemini's Rule-Based Review ---`,
+            ``,
+            reviewResponse,
+            ``,
+            `---`,
+            `Review saved to: ${logPath}`,
+          ].join("\n"),
+        }],
+      };
+    }
+
+    case "validate_changes": {
+      const { file_paths, rules, changes_description, diff } = validateChangesSchema.parse(args);
+
+      // Validate paths
+      const resolvedPaths = file_paths.map(fp => assertPathSafe(fp, "validate_changes"));
+      const missing = resolvedPaths.filter(f => !existsSync(f));
+      if (missing.length > 0) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "files_not_found",
+              missing_files: missing,
+              message: `${missing.length} modified file(s) not found.`,
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Guard against oversized diff
+      if (diff && diff.length > MAX_INPUT_CHARS) {
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "diff_too_large",
+              message: `Diff text exceeds maximum size (${MAX_INPUT_CHARS} chars). Provide a shorter diff or omit it.`,
+              diff_length: diff.length,
+              max_length: MAX_INPUT_CHARS,
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Build prompt and call Gemini
+      const fileRefs = resolvedPaths.map(f => `@${f}`).join(" ");
+      const prompt = buildValidateChangesPrompt(fileRefs, rules, changes_description, diff, resolvedPaths.length);
+
+      let validationResponse: string;
+      let source: "gemini" | "ollama";
+      try {
+        const result = await runGeminiWithFallback(prompt, CODE_REVIEW_TIMEOUT);
+        validationResponse = result.response;
+        source = result.source;
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              status: "validation_error",
+              message: `Validation failed: ${message}`,
+              suggestions: [
+                "Check Gemini authentication: gemini auth login",
+                "Ensure Ollama is running for fallback",
+                "Run health_check tool to diagnose",
+              ],
+            }, null, 2),
+          }],
+        };
+      }
+
+      // Extract verdict (best-effort)
+      const verdictMatch = validationResponse.match(/\*\*RESULT\*\*:\s*(PASS|FAIL)/i);
+      const verdict = verdictMatch ? verdictMatch[1].toUpperCase() : "UNKNOWN";
+
+      // Save to .ai_reviews/
+      const rulesForLog = rules.map((r, i) => `${i + 1}. ${r}`).join("\n");
+      const logContent = [
+        `# Change Validation`,
+        ``,
+        `**Date:** ${new Date().toISOString()}`,
+        `**Verdict:** ${verdict}`,
+        `**Source:** ${source}`,
+        `**Files:** ${resolvedPaths.length}`,
+        ``,
+        `## Changes Description`,
+        changes_description,
+        ``,
+        `## Rules`,
+        rulesForLog,
+        ``,
+        diff ? `## Diff\n\`\`\`\n${diff}\n\`\`\`\n` : "",
+        `## Files Validated`,
+        ...resolvedPaths.map(f => `- ${f}`),
+        ``,
+        `## Validation Result`,
+        ``,
+        validationResponse,
+      ].join("\n");
+      const logPath = await saveReviewToFile(logContent, "validate_changes");
+
+      return {
+        content: [{
+          type: "text",
+          text: [
+            `Validation ${verdict === "PASS" ? "PASSED" : verdict === "FAIL" ? "FAILED" : "Complete"}`,
+            `Files: ${resolvedPaths.length} | Rules: ${rules.length} | Verdict: ${verdict}`,
+            `Source: ${source} | Log: ${logPath}`,
+            ``,
+            `--- Validation Result ---`,
+            ``,
+            validationResponse,
+            ``,
+            `---`,
+            `Result saved to: ${logPath}`,
           ].join("\n"),
         }],
       };
