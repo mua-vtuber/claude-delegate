@@ -145,6 +145,7 @@ secret-*.*
 # Claude Code Configuration (user-specific)
 # ===========================================
 .claude/
+.omc/
 CLAUDE.md
 
 # ===========================================
